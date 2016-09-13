@@ -60,7 +60,10 @@ def read_bash_vars(filename):
         tmpf.flush()
         outs, errs = subprocess.Popen(('bash', tmpf.name),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
+        if errs:
+            raise RuntimeError(errs.decode())
         lines = outs.decode().splitlines()
+        assert len(var) == len(lines)
         return collections.OrderedDict(zip(var, lines))
 
 def scan_abbs_tree(cur, basepath):
