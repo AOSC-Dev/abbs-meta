@@ -83,6 +83,10 @@ def scan_abbs_tree(cur, basepath):
                     pkgspec = spec.copy()
                     pkgspec.update(read_bash_vars(os.path.join(dirpath, 'defines')))
                     name = pkgspec.pop('PKGNAME', None)
+                    if not name:
+                        # we assume it is a define for some specific architecture
+                        #print(dirpath, pkgspec)
+                        continue
                     section2 = pkgspec.pop('PKGSEC', None)
                     description = pkgspec.pop('PKGDES', None)
                     version = pkgspec.pop('VER', None)
