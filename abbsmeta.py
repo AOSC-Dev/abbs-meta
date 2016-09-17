@@ -3,10 +3,14 @@
 
 import os
 import re
+import sys
 import sqlite3
+import logging
 import tempfile
 import subprocess
 import collections
+
+logging.basicConfig(format='%(asctime)s %(levelname).1s %(message)s', level=logging.INFO)
 
 re_variable = re.compile(r'^\s*([a-zA-Z_][a-zA-Z0-9_]*)=')
 re_packagename = re.compile(r'^([a-z0-9][a-z0-9+.-]*)(.*)$')
@@ -55,13 +59,14 @@ def read_bash_vars(filename):
                 var.append(match.group(1))
             tmpf.write(ln)
         var = uniq(var)
+        tmpf.write('\n')
         for v in var:
             tmpf.write('echo "$%s"\n' % v)
         tmpf.flush()
         outs, errs = subprocess.Popen(('bash', tmpf.name),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE).communicate()
         if errs:
-            raise RuntimeError(errs.decode())
+            logging.warning('%s: %s', filename, errs.decode().rstrip())
         lines = outs.decode().splitlines()
         assert len(var) == len(lines)
         return collections.OrderedDict(zip(var, lines))
@@ -77,7 +82,7 @@ def scan_abbs_tree(cur, basepath):
             fullpath = os.path.join(secpath, pkgpath)
             if not os.path.isdir(fullpath):
                 continue
-            print(os.path.join(path, pkgpath))
+            logging.info(os.path.join(path, pkgpath))
             spec = read_bash_vars(os.path.join(fullpath, 'spec'))
             for dirpath, dirnames, filenames in os.walk(fullpath):
                 for filename in filenames:
