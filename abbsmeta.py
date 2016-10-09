@@ -8,6 +8,7 @@ import sqlite3
 import logging
 import subprocess
 import collections
+import concurrent.futures
 
 logging.basicConfig(
     format='%(asctime)s %(levelname).1s %(message)s', level=logging.INFO)
@@ -77,7 +78,31 @@ def read_bash_vars(filename):
         return collections.OrderedDict(zip(var, lines))
 
 
+def read_package_info(category, section, spec, dirpath):
+    pkgspec = spec.copy()
+    pkgspec.update(read_bash_vars(
+        os.path.join(dirpath, 'defines')))
+    name = pkgspec.pop('PKGNAME', None)
+    if not name:
+        # we assume it is a define for some specific architecture
+        # print(dirpath, pkgspec)
+        return
+    section2 = pkgspec.pop('PKGSEC', None)
+    description = pkgspec.pop('PKGDES', None)
+    version = pkgspec.pop('VER', None)
+    release = pkgspec.pop('REL', None)
+    dependencies = []
+    for rel in ('PKGDEP', 'PKGRECOM', 'PKGBREAK', 'PKGCONFL', 'PKGREP', 'BUILDDEP'):
+        for pkgname in pkgspec.pop(rel, '').split():
+            deppkg, depver = re_packagename.match(pkgname).groups()
+            dependencies.append((name, deppkg, depver, rel))
+    return ((name, category, section, section2, version, release, description),
+            pkgspec, dependencies)
+
+
 def scan_abbs_tree(cur, basepath):
+    executor = concurrent.futures.ThreadPoolExecutor(2)
+    futures = []
     categories = ('base-', 'extra-')
     for path in os.listdir(basepath):
         secpath = os.path.join(basepath, path)
@@ -94,30 +119,16 @@ def scan_abbs_tree(cur, basepath):
                 for filename in filenames:
                     if filename != 'defines':
                         continue
-                    pkgspec = spec.copy()
-                    pkgspec.update(read_bash_vars(
-                        os.path.join(dirpath, 'defines')))
-                    name = pkgspec.pop('PKGNAME', None)
-                    if not name:
-                        # we assume it is a define for some specific architecture
-                        # print(dirpath, pkgspec)
-                        continue
-                    section2 = pkgspec.pop('PKGSEC', None)
-                    description = pkgspec.pop('PKGDES', None)
-                    version = pkgspec.pop('VER', None)
-                    release = pkgspec.pop('REL', None)
-                    dependencies = []
-                    for rel in ('PKGDEP', 'PKGRECOM', 'PKGBREAK', 'PKGCONFL', 'PKGREP', 'BUILDDEP'):
-                        for pkgname in pkgspec.pop(rel, '').split():
-                            deppkg, depver = re_packagename.match(pkgname).groups()
-                            dependencies.append((name, deppkg, depver, rel))
-                    cur.execute('REPLACE INTO packages VALUES (?,?,?,?,?,?,?)',
-                        (name, category, section, section2, version, release, description))
-                    for k, v in pkgspec.items():
-                        cur.execute(
-                            'REPLACE INTO package_spec VALUES (?,?,?)', (name, k, v))
-                    cur.executemany(
-                        'REPLACE INTO package_dependencies VALUES (?,?,?,?)', dependencies)
+                    futures.append(executor.submit(
+                        read_package_info, category, section, spec, dirpath))
+    for future in futures:
+        result = future.result()
+        if result:
+            pkginfo, pkgspec, pkgdep = result
+            cur.execute('REPLACE INTO packages VALUES (?,?,?,?,?,?,?)', pkginfo)
+            for k, v in pkgspec.items():
+                cur.execute('REPLACE INTO package_spec VALUES (?,?,?)', (pkginfo[0], k, v))
+            cur.executemany('REPLACE INTO package_dependencies VALUES (?,?,?,?)', pkgdep)
 
 
 def main(dbfile, path):
