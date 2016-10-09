@@ -3,11 +3,11 @@
 
 import os
 import re
+import io
 import sqlite3
 import logging
 import subprocess
 import collections
-import io
 
 logging.basicConfig(
     format='%(asctime)s %(levelname).1s %(message)s', level=logging.INFO)
@@ -54,6 +54,7 @@ def uniq(seq):  # Dave Kirby
 
 
 def read_bash_vars(filename):
+    # we don't specify encoding here because the env will do.
     with open(filename, 'r') as sh, io.StringIO() as tmpf:
         var = []
         for ln in sh:
@@ -65,9 +66,10 @@ def read_bash_vars(filename):
         tmpf.write('\n')
         for v in var:
             tmpf.write('echo "$%s"\n' % v)
-        tmpf.flush()
-        outs, errs = subprocess.Popen(tmpf.getvalue(),
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True).communicate()
+        bash = subprocess.Popen(
+            ('bash',), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE)
+        outs, errs = bash.communicate(tmpf.getvalue().encode())
         if errs:
             logging.warning('%s: %s', filename, errs.decode().rstrip())
         lines = outs.decode().splitlines()
@@ -107,11 +109,10 @@ def scan_abbs_tree(cur, basepath):
                     dependencies = []
                     for rel in ('PKGDEP', 'PKGRECOM', 'PKGBREAK', 'PKGCONFL', 'PKGREP', 'BUILDDEP'):
                         for pkgname in pkgspec.pop(rel, '').split():
-                            deppkg, depver = re_packagename.match(
-                                pkgname).groups()
+                            deppkg, depver = re_packagename.match(pkgname).groups()
                             dependencies.append((name, deppkg, depver, rel))
                     cur.execute('REPLACE INTO packages VALUES (?,?,?,?,?,?,?)',
-                                (name, category, section, section2, version, release, description))
+                        (name, category, section, section2, version, release, description))
                     for k, v in pkgspec.items():
                         cur.execute(
                             'REPLACE INTO package_spec VALUES (?,?,?)', (name, k, v))
