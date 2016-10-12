@@ -1,4 +1,4 @@
 # abbs-meta
 Generate a metadata SQLite database from an ABBS tree
 
-Usage: `python3 abbsmeta.py [abbs.db] [path-to-abbs-tree]`
+Ruby Version, with multi-threading
