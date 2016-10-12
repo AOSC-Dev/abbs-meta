@@ -18,6 +18,7 @@ re_packagename = re.compile(r'^([a-z0-9][a-z0-9+.-]*)(.*)$')
 
 
 def init_db(cur):
+    cur.execute('PRAGMA journal_mode=WAL')
     cur.execute('CREATE TABLE IF NOT EXISTS packages ('
                 'name TEXT PRIMARY KEY,'  # coreutils
                 'category TEXT,'  # base
