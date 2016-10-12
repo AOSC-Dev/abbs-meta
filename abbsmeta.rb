@@ -11,7 +11,7 @@ class Package
 		shell = File.read(spec) + "\n"
 		shell += File.read(defines) + "\n"
 		for arr in $attr_list
-			shell += "echo #{arr}=$#{arr}\n"
+			shell += "echo \"#{arr}->\"$#{arr}\n"
 		end
 		IO.popen(["bash"], "r+") { |f|
 			f.puts shell
@@ -19,7 +19,7 @@ class Package
 			@result = f.read.split("\n")
 		}
 		for att in @result
-			@line = att.split("=")
+			@line = att.split("->")
 			self.def_attr[@line[0]] = @line[1] if !@line.nil? && @line.length > 1 && !@line[0].nil? && !@line[0].empty?
 		end
 	end
@@ -37,9 +37,16 @@ class Package
 			$db_replaces_package_spec.push "(\"#{name}\", \"#{a}\", \"#{b}\")"
 		end
 		for rel in ["PKGDEP", "PKGRECOM", "PKGBREAK", "PKGCONFL", "PKGREP", "BUILDDEP"]
-			pkglist = self.def_attr[rel].split(" ") if self.def_attr[rel]
+			pkglist = self.def_attr[rel].split() if self.def_attr[rel]
 			for pkgn in pkglist
-			#	puts pkgn
+				i = pkgn.index(/[<=>]/)
+				if i
+					depname = pkgn[0..i - 1]
+					depver = pkgn[i..-1]
+				else
+					depname = pkgn
+				end
+				$db_replaces_package_dependencies.push "(\"#{name}\", \"#{depname}\", \"#{depver}\", \"#{rel}\")"
 			end if pkglist
 		end
 	end
@@ -124,6 +131,7 @@ def init_db
 	
 	$db_replaces_package = []
 	$db_replaces_package_spec = []
+	$db_replaces_package_dependencies = []
 end
 
 setup
@@ -148,4 +156,6 @@ sql = "REPLACE INTO packages (name, category, section, pkg_section, version, rel
 $db.execute sql
 sql = "REPLACE INTO package_spec (package, key, value) VALUES #{$db_replaces_package_spec.join(", ")}"
 $db.execute sql
-
+sql = "REPLACE INTO package_dependencies (package, dependency, version, relationship) VALUES #{$db_replaces_package_dependencies.join(", ")}"
+$db.execute sql
+puts "Done"
