@@ -61,6 +61,10 @@ def worker
 	end
 end
 
+def init_db
+	$db = SQLite3::Database.new "abbs.db"
+end
+
 setup
 $attr_list = ["PKGNAME", "PKGVER", "PKGSEC", "PKGDES", "PKGDEP", "PKGRECOM", "PKGBREAK", "PKGCONFL", "PKGREP","BUILDDEP","VER_NONE", "VER", "SRCTBL", "REL"]
 $built_pkg_list = []
@@ -77,6 +81,7 @@ puts "Start Main Thread"
 worker
 
 puts "Writing database.."
-for pkg in built_pkg_list
+init_db
+for pkg in $built_pkg_list
 	pkg.save
 end
