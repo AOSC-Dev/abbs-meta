@@ -4,6 +4,7 @@ require 'sqlite3'
 
 class Package
 	attr_accessor :cat
+	attr_accessor :sec
 	attr_accessor :def_attr
 
 	def read_att(defines, spec)
@@ -24,7 +25,23 @@ class Package
 	end
 
 	def save
+		name = self.def_attr["PKGNAME"]
+		return if !name # we assume it is a define for some specific architecture
+		section2 = self.def_attr["PKGSEC"]
+		description = self.def_attr["PKGDES"]
+		version = self.def_attr["VER"]
+		release = self.def_attr["REL"]
 		
+		$db_replaces_package.push "(\"#{name}\", \"#{self.cat}\", \"#{self.sec}\", \"#{section2}\", \"#{version}\", \"#{release}\", \"#{description}\")"
+		self.def_attr.each do |a, b|
+			$db_replaces_package_spec.push "(\"#{name}\", \"#{a}\", \"#{b}\")"
+		end
+		for rel in ["PKGDEP", "PKGRECOM", "PKGBREAK", "PKGCONFL", "PKGREP", "BUILDDEP"]
+			pkglist = self.def_attr[rel].split(" ") if self.def_attr[rel]
+			for pkgn in pkglist
+			#	puts pkgn
+			end if pkglist
+		end
 	end
 
 	def initialize(dir, cat, abbs_pkg)
@@ -32,18 +49,18 @@ class Package
 		self.def_attr = Hash.new
 		@spec_file = File.join(dir, "spec")
 		@define_file = File.join(dir, "autobuild/defines")
-		self.cat = cat
+		self.cat, self.sec = cat.split("-")
 		read_att(@define_file, @spec_file)
+		save
 	end	
 
 end
 
-$database = ARGV[0]
-$pool = ARGV[1]
-
 def setup
 	$categories = []
 	$pkg_list = []
+	$database = ARGV[0]
+	$pool = ARGV[1]
 	Dir.foreach($pool) do |cat|
 		if (cat.start_with?("extra-") || cat.start_with?("base-"))
 			$categories.push(cat)
@@ -104,6 +121,9 @@ def init_db
 		CREATE INDEX IF NOT EXISTS idx_package_dependencies
 		  ON package_dependencies (package)
 	SQL
+	
+	$db_replaces_package = []
+	$db_replaces_package_spec = []
 end
 
 setup
@@ -111,6 +131,8 @@ $attr_list = ["PKGNAME", "PKGVER", "PKGSEC", "PKGDES", "PKGDEP", "PKGRECOM", "PK
 $built_pkg_list = []
 threads = (`grep "processor" /proc/cpuinfo | sort -u | wc -l`).to_i
 puts threads.to_s + " Threads found"
+
+init_db
 
 i = 0.to_i
 while i < threads - 1
@@ -122,7 +144,8 @@ puts "Start Main Thread"
 worker
 
 puts "Writing database.."
-init_db
-for pkg in $built_pkg_list
-	pkg.save
-end
+sql = "REPLACE INTO packages (name, category, section, pkg_section, version, release, description) VALUES #{$db_replaces_package.join(", ")}"
+$db.execute sql
+sql = "REPLACE INTO package_spec (package, key, value) VALUES #{$db_replaces_package_spec.join(", ")}"
+$db.execute sql
+
