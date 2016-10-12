@@ -12,7 +12,11 @@ class Package
 		for arr in $attr_list
 			shell += "echo #{arr}=$#{arr}\n"
 		end
-		IO.popen(shell) { |f| @result = f.read.split("\n")}
+		IO.popen(["bash"], "r+") { |f|
+			f.puts shell
+			f.close_write
+			@result = f.read.split("\n")
+		}
 		for att in @result
 			@line = att.split("=")
 			self.def_attr[@line[0]] = @line[1] if !@line.nil? && @line.length > 1 && !@line[0].nil? && !@line[0].empty?
@@ -34,7 +38,8 @@ class Package
 
 end
 
-$pool = "/usr/lib/abbs/repo"
+$database = ARGV[0]
+$pool = ARGV[1]
 
 def setup
 	$categories = []
@@ -62,7 +67,43 @@ def worker
 end
 
 def init_db
-	$db = SQLite3::Database.new "abbs.db"
+	$db = SQLite3::Database.new $database
+	$db.execute <<-SQL
+		CREATE TABLE IF NOT EXISTS packages (
+		  name TEXT PRIMARY KEY,
+		  category TEXT,
+		  section TEXT,
+		  pkg_section TEXT,
+		  version TEXT,
+		  release TEXT,
+		  description TEXT
+		)
+    SQL
+    
+    $db.execute <<-SQL
+		CREATE TABLE IF NOT EXISTS package_spec (
+		  package TEXT,
+		  key TEXT,
+		  value TEXT,
+		  PRIMARY KEY (package, key)
+		)
+    SQL
+    
+    $db.execute <<-SQL
+		CREATE TABLE IF NOT EXISTS package_dependencies (
+		  package TEXT,
+		  dependency TEXT,
+		  version TEXT,
+		  relationship TEXT,
+		  PRIMARY KEY (package, dependency, relationship),
+		  FOREIGN KEY(package) REFERENCES packages(name)
+		)
+	SQL
+    
+    $db.execute <<-SQL
+		CREATE INDEX IF NOT EXISTS idx_package_dependencies
+		  ON package_dependencies (package)
+	SQL
 end
 
 setup
