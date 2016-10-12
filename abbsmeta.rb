@@ -12,7 +12,11 @@ class Package
 		for arr in $attr_list
 			shell += "echo #{arr}=$#{arr}\n"
 		end
-		IO.popen(shell) { |f| @result = f.read.split("\n")}
+		IO.popen(["bash"], "r+") { |f|
+			f.puts shell
+			f.close_write
+			@result = f.read.split("\n")
+		}
 		for att in @result
 			@line = att.split("=")
 			self.def_attr[@line[0]] = @line[1] if !@line.nil? && @line.length > 1 && !@line[0].nil? && !@line[0].empty?
@@ -34,7 +38,8 @@ class Package
 
 end
 
-$pool = "/usr/lib/abbs/repo"
+$database = ARGV[0]
+$pool = ARGV[1]
 
 def setup
 	$categories = []
@@ -77,6 +82,6 @@ puts "Start Main Thread"
 worker
 
 puts "Writing database.."
-for pkg in built_pkg_list
+for pkg in $built_pkg_list
 	pkg.save
 end
