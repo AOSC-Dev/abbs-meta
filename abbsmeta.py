@@ -13,7 +13,7 @@ import concurrent.futures
 logging.basicConfig(
     format='%(asctime)s %(levelname).1s %(message)s', level=logging.INFO)
 
-re_variable = re.compile(r'^\s*([a-zA-Z_][a-zA-Z0-9_]*)=')
+re_variable = re.compile(b'^\\s*([a-zA-Z_][a-zA-Z0-9_]*)=')
 re_packagename = re.compile(r'^([a-z0-9][a-z0-9+.-]*)(.*)$')
 
 
@@ -56,52 +56,60 @@ def uniq(seq):  # Dave Kirby
 
 def read_bash_vars(filename):
     # we don't specify encoding here because the env will do.
-    with open(filename, 'r') as sh, io.StringIO() as tmpf:
-        var = []
+    var = []
+    stdin = []
+    with open(filename, 'rb') as sh:
         for ln in sh:
             match = re_variable.match(ln)
             if match:
                 var.append(match.group(1))
-            tmpf.write(ln)
-        var = uniq(var)
-        tmpf.write('\n')
-        for v in var:
-            tmpf.write('echo "$%s"\n' % v)
-        bash = subprocess.Popen(
-            ('bash',), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE)
-        outs, errs = bash.communicate(tmpf.getvalue().encode())
-        if errs:
-            logging.warning('%s: %s', filename, errs.decode().rstrip())
-        lines = outs.decode().splitlines()
-        assert len(var) == len(lines)
-        return collections.OrderedDict(zip(var, lines))
+            stdin.append(ln)
+        stdin.append(b'\n')
+    var = uniq(var)
+    for v in var:
+        stdin.append(b'echo "$%s"\n' % v)
+    outs, errs = subprocess.Popen(
+        ('bash',), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE).communicate(b''.join(stdin))
+    if errs:
+        logging.warning('%s: %s', filename, errs.decode().rstrip())
+    lines = outs.decode().splitlines()
+    assert len(var) == len(lines)
+    return collections.OrderedDict(zip(map(bytes.decode, var), lines))
 
 
-def read_package_info(category, section, spec, dirpath):
-    pkgspec = spec.copy()
-    pkgspec.update(read_bash_vars(
-        os.path.join(dirpath, 'defines')))
-    name = pkgspec.pop('PKGNAME', None)
-    if not name:
-        # we assume it is a define for some specific architecture
-        # print(dirpath, pkgspec)
-        return
-    section2 = pkgspec.pop('PKGSEC', None)
-    description = pkgspec.pop('PKGDES', None)
-    version = pkgspec.pop('VER', None)
-    release = pkgspec.pop('REL', None)
-    dependencies = []
-    for rel in ('PKGDEP', 'PKGRECOM', 'PKGBREAK', 'PKGCONFL', 'PKGREP', 'BUILDDEP'):
-        for pkgname in pkgspec.pop(rel, '').split():
-            deppkg, depver = re_packagename.match(pkgname).groups()
-            dependencies.append((name, deppkg, depver, rel))
-    return ((name, category, section, section2, version, release, description),
-            pkgspec, dependencies)
+def read_package_info(category, section, sec_pkg, fullpath):
+    results = []
+    logging.info(sec_pkg)
+    spec = read_bash_vars(os.path.join(fullpath, 'spec'))
+    for dirpath, dirnames, filenames in os.walk(fullpath):
+        for filename in filenames:
+            if filename != 'defines':
+                continue
+            pkgspec = spec.copy()
+            pkgspec.update(read_bash_vars(
+                os.path.join(dirpath, 'defines')))
+            name = pkgspec.pop('PKGNAME', None)
+            if not name:
+                # we assume it is a define for some specific architecture
+                # print(dirpath, pkgspec)
+                continue
+            section2 = pkgspec.pop('PKGSEC', None)
+            description = pkgspec.pop('PKGDES', None)
+            version = pkgspec.pop('VER', None)
+            release = pkgspec.pop('REL', None)
+            dependencies = []
+            for rel in ('PKGDEP', 'PKGRECOM', 'PKGBREAK', 'PKGCONFL', 'PKGREP', 'BUILDDEP'):
+                for pkgname in pkgspec.pop(rel, '').split():
+                    deppkg, depver = re_packagename.match(pkgname).groups()
+                    dependencies.append((name, deppkg, depver, rel))
+            results.append(((name, category, section, section2, version, release,
+                             description), pkgspec, dependencies))
+    return results
 
 
 def scan_abbs_tree(cur, basepath):
-    executor = concurrent.futures.ThreadPoolExecutor(2)
+    executor = concurrent.futures.ThreadPoolExecutor(os.cpu_count())
     futures = []
     categories = ('base-', 'extra-')
     for path in os.listdir(basepath):
@@ -113,22 +121,17 @@ def scan_abbs_tree(cur, basepath):
             fullpath = os.path.join(secpath, pkgpath)
             if not os.path.isdir(fullpath):
                 continue
-            logging.info(os.path.join(path, pkgpath))
-            spec = read_bash_vars(os.path.join(fullpath, 'spec'))
-            for dirpath, dirnames, filenames in os.walk(fullpath):
-                for filename in filenames:
-                    if filename != 'defines':
-                        continue
-                    futures.append(executor.submit(
-                        read_package_info, category, section, spec, dirpath))
+            futures.append(executor.submit(
+                read_package_info, category, section,
+                os.path.join(path, pkgpath), fullpath))
     for future in futures:
-        result = future.result()
-        if result:
+        for result in future.result():
             pkginfo, pkgspec, pkgdep = result
             cur.execute('REPLACE INTO packages VALUES (?,?,?,?,?,?,?)', pkginfo)
             for k, v in pkgspec.items():
                 cur.execute('REPLACE INTO package_spec VALUES (?,?,?)', (pkginfo[0], k, v))
             cur.executemany('REPLACE INTO package_dependencies VALUES (?,?,?,?)', pkgdep)
+    logging.info('Done.')
 
 
 def main(dbfile, path):
