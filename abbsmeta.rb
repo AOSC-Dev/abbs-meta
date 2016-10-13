@@ -52,7 +52,18 @@ class Package
 	end
 
 	def initialize(dir, cat, abbs_pkg)
+		if $diff
+			IO.popen(["bash"], "r+") { |f|
+				f.puts "git --git-dir=#{$git_pool} --work-tree=#{$pool} diff --numstat --minimal #{$obja} #{$objb} -- #{cat}/#{abbs_pkg}/"
+				f.close_write
+				@change = f.read
+			}
+			if @change.empty? #|| @defines_change.empty?
+				return
+			end
+		end
 		puts "#{cat} : Reading #{abbs_pkg}"
+		
 		self.def_attr = Hash.new
 		@spec_file = File.join(dir, "spec")
 		@define_file = File.join(dir, "autobuild/defines")
@@ -68,6 +79,14 @@ def setup
 	$pkg_list = []
 	$database = ARGV[0]
 	$pool = ARGV[1]
+	
+	$diff = ARGV[2] == "--diff"
+	if $diff
+		$git_pool = File.join($pool, ".git")
+		$obja = ARGV[3]
+		$objb = ARGV[4]
+	end
+
 	Dir.foreach($pool) do |cat|
 		if (cat.start_with?("extra-") || cat.start_with?("base-"))
 			$categories.push(cat)
@@ -102,18 +121,18 @@ def init_db
 		  release TEXT,
 		  description TEXT
 		)
-    SQL
+	SQL
     
-    $db.execute <<-SQL
+	$db.execute <<-SQL
 		CREATE TABLE IF NOT EXISTS package_spec (
 		  package TEXT,
 		  key TEXT,
 		  value TEXT,
 		  PRIMARY KEY (package, key)
 		)
-    SQL
+	SQL
     
-    $db.execute <<-SQL
+	$db.execute <<-SQL
 		CREATE TABLE IF NOT EXISTS package_dependencies (
 		  package TEXT,
 		  dependency TEXT,
@@ -124,7 +143,7 @@ def init_db
 		)
 	SQL
     
-    $db.execute <<-SQL
+	$db.execute <<-SQL
 		CREATE INDEX IF NOT EXISTS idx_package_dependencies
 		  ON package_dependencies (package)
 	SQL
