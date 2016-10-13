@@ -52,16 +52,8 @@ class Package
 	end
 
 	def initialize(dir, cat, abbs_pkg)
-		if $diff
-			IO.popen(["bash"], "r+") { |f|
-				f.puts "git --git-dir=#{$git_pool} --work-tree=#{$pool} diff --numstat --minimal #{$obja} #{$objb} -- #{cat}/#{abbs_pkg}/"
-				f.close_write
-				@change = f.read
-			}
-			if @change.empty? #|| @defines_change.empty?
-				return
-			end
-		end
+		return if $diff && $total_diff.index("#{cat}/#{abbs_pkg}").nil?
+		
 		puts "#{cat} : Reading #{abbs_pkg}"
 		
 		self.def_attr = Hash.new
@@ -85,6 +77,11 @@ def setup
 		$git_pool = File.join($pool, ".git")
 		$obja = ARGV[3]
 		$objb = ARGV[4]
+		IO.popen(["bash"], "r+") { |f|
+			f.puts "git --git-dir=#{$git_pool} --work-tree=#{$pool} diff --name-status #{$obja} #{$objb}"
+			f.close_write
+			$total_diff = f.read
+		}
 	end
 
 	Dir.foreach($pool) do |cat|
@@ -162,7 +159,7 @@ puts threads.to_s + " Threads found"
 init_db
 
 i = 0.to_i
-while i < threads - 1
+while i < threads
 	puts "Start Thread"
 	Thread.new {worker}
 	i+=1
@@ -172,9 +169,9 @@ worker
 
 puts "Writing database.."
 sql = "REPLACE INTO packages (name, category, section, pkg_section, version, release, description) VALUES #{$db_replaces_package.join(", ")}"
-$db.execute sql
+$db.execute sql if !$db_replaces_package.empty?
 sql = "REPLACE INTO package_spec (package, key, value) VALUES #{$db_replaces_package_spec.join(", ")}"
-$db.execute sql
+$db.execute sql if !$db_replaces_package_spec.empty?
 sql = "REPLACE INTO package_dependencies (package, dependency, version, relationship) VALUES #{$db_replaces_package_dependencies.join(", ")}"
-$db.execute sql
+$db.execute sql if !$db_replaces_package_dependencies.empty?
 puts "Done"
