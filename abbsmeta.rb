@@ -51,14 +51,14 @@ class Package
 		end
 	end
 
-	def initialize(dir, cat, abbs_pkg)
+	def initialize(dir, cat, abbs_pkg, defines)
 		return if $diff && $total_diff.index("#{cat}/#{abbs_pkg}").nil?
 		
 		puts "#{cat} : Reading #{abbs_pkg}"
 		
 		self.def_attr = Hash.new
 		@spec_file = File.join(dir, "spec")
-		@define_file = File.join(dir, "autobuild/defines")
+		@define_file = File.join(dir, defines)
 		self.cat, self.sec = cat.split("-")
 		read_att(@define_file, @spec_file)
 		save
@@ -90,7 +90,9 @@ def setup
 			d = File.join($pool, cat)
 			Dir.foreach(d) do |pkg_file|
 				pkgd = File.join(d, pkg_file)
-				$pkg_list.push({ :pkgd => pkgd, :cat => cat, :pkg_file => pkg_file, :process => false}) if File.exist?(File.join(pkgd,"autobuild"))
+				Dir.foreach(pkgd) do |defines|
+					$pkg_list.push({ :pkgd => pkgd, :cat => cat, :pkg_file => pkg_file, :defines => "#{defines}/defines", :process => false}) if File.exist?(File.join(pkgd,"#{defines}/defines"))
+				end
 			end
 		end
 	end
@@ -100,7 +102,7 @@ def worker
 	for a in $pkg_list
 		if !a[:process]
 			a[:process] = true
-			pkg = Package.new(a[:pkgd], a[:cat], a[:pkg_file])
+			pkg = Package.new(a[:pkgd], a[:cat], a[:pkg_file], a[:defines])
 			$built_pkg_list.push(pkg)
 		end
 	end
