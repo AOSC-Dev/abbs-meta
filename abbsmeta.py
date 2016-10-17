@@ -145,15 +145,14 @@ def scan_abbs_tree(cur, basepath):
                 'SELECT key FROM package_spec WHERE package = ? ORDER BY key ASC',
                 (name,))]
             if pkgspec_old != sorted(pkgspec.keys()):
-                logging.info('updated spec: %s', name)
-                # print(result)
+                logging.debug('updated spec: %s', name)
                 cur.execute('DELETE FROM package_spec WHERE package = ?', (name,))
             for k, v in pkgspec.items():
                 cur.execute('REPLACE INTO package_spec VALUES (?,?,?)', (name, k, v))
             pkgdep_old = cur.execute(
                 'SELECT dependency, relationship FROM package_dependencies WHERE package = ? ORDER BY dependency, relationship ASC', (name,)).fetchall()
             if pkgdep_old != sorted((x[1], x[3]) for x in pkgdep):
-                logging.info('updated dependencies: %s', name)
+                logging.debug('updated dependencies: %s', name)
                 cur.execute('DELETE FROM package_dependencies WHERE package = ?',
                     (pkginfo[0],))
             cur.executemany('REPLACE INTO package_dependencies VALUES (?,?,?,?)', pkgdep)
@@ -164,7 +163,7 @@ def scan_abbs_tree(cur, basepath):
             cur.execute('DELETE FROM packages WHERE name = ?', (name,))
             cur.execute('DELETE FROM package_spec WHERE package = ?', (name,))
             cur.execute('DELETE FROM package_dependencies WHERE package = ?', (name,))
-        logging.info('removed %d packages.' % len(removed))
+            logging.info('removed: ' + name)
     logging.info('Done.')
 
 
