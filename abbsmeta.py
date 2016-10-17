@@ -124,7 +124,7 @@ def scan_abbs_tree(cur, basepath):
         category, section = path.split('-')
         for pkgpath in os.listdir(secpath):
             fullpath = os.path.join(secpath, pkgpath)
-            if not os.path.isdir(fullpath):
+            if not os.path.isdir(fullpath) or os.path.islink(fullpath):
                 continue
             futures.append(executor.submit(
                 read_package_info, category, section, path, pkgpath, fullpath))
