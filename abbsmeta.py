@@ -32,7 +32,8 @@ def init_db(cur):
                 'package TEXT,'
                 'key TEXT,'
                 'value TEXT,'
-                'PRIMARY KEY (package, key)'
+                'PRIMARY KEY (package, key),'
+                'FOREIGN KEY(package) REFERENCES packages(name)'
                 ')')
     cur.execute('CREATE TABLE IF NOT EXISTS package_dependencies ('
                 'package TEXT,'
@@ -45,6 +46,8 @@ def init_db(cur):
                 # we may have unmatched dependency package name
                 # 'FOREIGN KEY(dependency) REFERENCES packages(name)'
                 ')')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_package_spec'
+                ' ON package_spec (package)')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_package_dependencies'
                 ' ON package_dependencies (package)')
 
@@ -79,9 +82,9 @@ def read_bash_vars(filename):
     return collections.OrderedDict(zip(map(bytes.decode, var), lines))
 
 
-def read_package_info(category, section, sec_pkg, fullpath):
+def read_package_info(category, section, secpath, pkgpath, fullpath):
     results = []
-    logging.info(sec_pkg)
+    logging.info(os.path.join(secpath, pkgpath))
     spec = read_bash_vars(os.path.join(fullpath, 'spec'))
     for dirpath, dirnames, filenames in os.walk(fullpath):
         for filename in filenames:
@@ -105,13 +108,14 @@ def read_package_info(category, section, sec_pkg, fullpath):
                     deppkg, depver = re_packagename.match(pkgname).groups()
                     dependencies.append((name, deppkg, depver, rel))
             results.append(((name, category, section, section2, version, release,
-                             description), pkgspec, dependencies))
+                             description), pkgpath, pkgspec, uniq(dependencies)))
     return results
 
 
 def scan_abbs_tree(cur, basepath):
     executor = concurrent.futures.ThreadPoolExecutor(os.cpu_count())
     futures = []
+    packages = {}
     categories = ('base-', 'extra-')
     for path in os.listdir(basepath):
         secpath = os.path.join(basepath, path)
@@ -123,14 +127,35 @@ def scan_abbs_tree(cur, basepath):
             if not os.path.isdir(fullpath):
                 continue
             futures.append(executor.submit(
-                read_package_info, category, section,
-                os.path.join(path, pkgpath), fullpath))
+                read_package_info, category, section, path, pkgpath, fullpath))
     for future in futures:
         for result in future.result():
-            pkginfo, pkgspec, pkgdep = result
+            pkginfo, pkgpath, pkgspec, pkgdep = result
+            name = pkginfo[0]
+            if name in packages:
+                cat, sec, ppath = packages[name]
+                logging.error(
+                    'duplicate package "%s" found in %s-%s/%s and %s-%s/%s',
+                    name, cat, sec, ppath, pkginfo[1], pkginfo[2], pkgpath
+                )
+            else:
+                packages[name] = (pkginfo[1], pkginfo[2], pkgpath)
             cur.execute('REPLACE INTO packages VALUES (?,?,?,?,?,?,?)', pkginfo)
+            pkgspec_old = [k[0] for k in cur.execute(
+                'SELECT key FROM package_spec WHERE package = ? ORDER BY key ASC',
+                (pkginfo[0],))]
+            if pkgspec_old != sorted(pkgspec.keys()):
+                logging.info('updated spec: %s', name)
+                # print(result)
+                cur.execute('DELETE FROM package_spec WHERE package = ?', (name,))
             for k, v in pkgspec.items():
-                cur.execute('REPLACE INTO package_spec VALUES (?,?,?)', (pkginfo[0], k, v))
+                cur.execute('REPLACE INTO package_spec VALUES (?,?,?)', (name, k, v))
+            pkgdep_old = cur.execute(
+                'SELECT dependency, relationship FROM package_dependencies WHERE package = ? ORDER BY dependency, relationship ASC', (name,)).fetchall()
+            if pkgdep_old != sorted((x[1], x[3]) for x in pkgdep):
+                logging.info('updated dependencies: %s', name)
+                cur.execute('DELETE FROM package_dependencies WHERE package = ?',
+                    (pkginfo[0],))
             cur.executemany('REPLACE INTO package_dependencies VALUES (?,?,?,?)', pkgdep)
     logging.info('Done.')
 
