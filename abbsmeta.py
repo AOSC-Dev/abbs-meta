@@ -71,14 +71,18 @@ def read_bash_vars(filename):
         stdin.append(b'\n')
     var = uniq(var)
     for v in var:
-        stdin.append(b'echo "$%s"\n' % v)
+        # workaround variables containing newlines
+        stdin.append(b'echo "${%s//$\'\\n\'/\\\\n}"\n' % v)
     outs, errs = subprocess.Popen(
         ('bash',), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE).communicate(b''.join(stdin))
     if errs:
         logging.warning('%s: %s', filename, errs.decode().rstrip())
-    lines = outs.decode().splitlines()
-    assert len(var) == len(lines)
+    lines = [l.replace('\\n', '\n') for l in outs.decode().splitlines()]
+    try:
+        assert len(var) == len(lines)
+    except:
+        logging.exception(filename)
     return collections.OrderedDict(zip(map(bytes.decode, var), lines))
 
 
@@ -103,7 +107,8 @@ def read_package_info(category, section, secpath, pkgpath, fullpath):
             version = pkgspec.pop('VER', None)
             release = pkgspec.pop('REL', None)
             dependencies = []
-            for rel in ('PKGDEP', 'PKGRECOM', 'PKGBREAK', 'PKGCONFL', 'PKGREP', 'BUILDDEP'):
+            for rel in ('PKGDEP', 'PKGRECOM', 'PKGBREAK', 'PKGCONFL', 'PKGREP',
+                        'BUILDDEP', 'PKGDEP_DPKG', 'PKGDEP_RPM'):
                 for pkgname in pkgspec.pop(rel, '').split():
                     deppkg, depver = re_packagename.match(pkgname).groups()
                     dependencies.append((name, deppkg, depver, rel))
