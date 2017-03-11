@@ -24,6 +24,7 @@ def init_db(cur):
                 'category TEXT,'  # base
                 'section TEXT,'  # utils
                 'pkg_section TEXT,'  # (PKGSEC)
+                'directory TEXT,' # second-level dir in aosc-os-abbs
                 'version TEXT,'  # 8.25
                 'release TEXT,'  # None
                 'description TEXT'
@@ -112,8 +113,10 @@ def read_package_info(category, section, secpath, pkgpath, fullpath):
                 for pkgname in pkgspec.pop(rel, '').split():
                     deppkg, depver = re_packagename.match(pkgname).groups()
                     dependencies.append((name, deppkg, depver, rel))
-            results.append(((name, category, section, section2, version, release,
-                             description), pkgpath, pkgspec, uniq(dependencies)))
+            results.append((
+                (name, category, section, section2, pkgpath, version,
+                 release, description), pkgpath, pkgspec, uniq(dependencies)
+            ))
     return results
 
 
@@ -145,7 +148,7 @@ def scan_abbs_tree(cur, basepath):
                 )
             else:
                 packages[name] = (pkginfo[1], pkginfo[2], pkgpath)
-            cur.execute('REPLACE INTO packages VALUES (?,?,?,?,?,?,?)', pkginfo)
+            cur.execute('REPLACE INTO packages VALUES (?,?,?,?,?,?,?,?)', pkginfo)
             pkgspec_old = [k[0] for k in cur.execute(
                 'SELECT key FROM package_spec WHERE package = ? ORDER BY key ASC',
                 (name,))]
