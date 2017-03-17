@@ -27,7 +27,8 @@ def init_db(cur):
                 'directory TEXT,' # second-level dir in aosc-os-abbs
                 'version TEXT,'  # 8.25
                 'release TEXT,'  # None
-                'description TEXT'
+                'description TEXT,'
+                'commit_time INTEGER' # git commit time
                 ')')
     cur.execute('CREATE TABLE IF NOT EXISTS package_spec ('
                 'package TEXT,'
@@ -87,10 +88,23 @@ def read_bash_vars(filename):
     return collections.OrderedDict(zip(map(bytes.decode, var), lines))
 
 
-def read_package_info(category, section, secpath, pkgpath, fullpath):
+def read_commit_time(basepath, filename):
+    outs, errs = subprocess.Popen(
+        ('git', 'log', '-n', '1', '--pretty=format:%at', '--', filename),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        cwd=basepath).communicate()
+    if errs:
+        logging.warning('git %s: %s', basepath, errs.decode().rstrip())
+    return int(outs.decode().strip())
+
+
+def read_package_info(category, section, basepath, secpath, pkgpath):
     results = []
-    logging.info(os.path.join(secpath, pkgpath))
+    repopath = os.path.join(secpath, pkgpath)
+    logging.info(repopath)
+    fullpath = os.path.join(basepath, repopath)
     spec = read_bash_vars(os.path.join(fullpath, 'spec'))
+    commit_time = read_commit_time(basepath, os.path.join(repopath, 'spec'))
     for dirpath, dirnames, filenames in os.walk(fullpath):
         for filename in filenames:
             if filename != 'defines':
@@ -114,8 +128,8 @@ def read_package_info(category, section, secpath, pkgpath, fullpath):
                     deppkg, depver = re_packagename.match(pkgname).groups()
                     dependencies.append((name, deppkg, depver, rel))
             results.append((
-                (name, category, section, section2, pkgpath, version,
-                 release, description), pkgpath, pkgspec, uniq(dependencies)
+                (name, category, section, section2, pkgpath, version, release,
+                 description, commit_time), pkgpath, pkgspec, uniq(dependencies)
             ))
     return results
 
@@ -135,7 +149,7 @@ def scan_abbs_tree(cur, basepath):
             if not os.path.isdir(fullpath) or os.path.islink(fullpath):
                 continue
             futures.append(executor.submit(
-                read_package_info, category, section, path, pkgpath, fullpath))
+                read_package_info, category, section, basepath, path, pkgpath))
     for future in futures:
         for result in future.result():
             pkginfo, pkgpath, pkgspec, pkgdep = result
@@ -148,7 +162,7 @@ def scan_abbs_tree(cur, basepath):
                 )
             else:
                 packages[name] = (pkginfo[1], pkginfo[2], pkgpath)
-            cur.execute('REPLACE INTO packages VALUES (?,?,?,?,?,?,?,?)', pkginfo)
+            cur.execute('REPLACE INTO packages VALUES (?,?,?,?,?,?,?,?,?)', pkginfo)
             pkgspec_old = [k[0] for k in cur.execute(
                 'SELECT key FROM package_spec WHERE package = ? ORDER BY key ASC',
                 (name,))]
