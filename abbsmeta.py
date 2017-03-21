@@ -21,6 +21,7 @@ def init_db(cur):
     cur.execute('PRAGMA journal_mode=WAL')
     cur.execute('CREATE TABLE IF NOT EXISTS packages ('
                 'name TEXT PRIMARY KEY,'  # coreutils
+                'tree TEXT,'      # abbs tree name
                 'category TEXT,'  # base
                 'section TEXT,'  # utils
                 'pkg_section TEXT,'  # (PKGSEC)
@@ -83,7 +84,7 @@ def read_bash_vars(filename):
     lines = [l.replace('\\n', '\n') for l in outs.decode().splitlines()]
     try:
         assert len(var) == len(lines)
-    except:
+    except AssertionError:
         logging.exception(filename)
     return collections.OrderedDict(zip(map(bytes.decode, var), lines))
 
@@ -110,7 +111,7 @@ def read_diff(basepath, lastupdate):
     return outs.decode().splitlines()
 
 
-def read_package_info(category, section, basepath, secpath, pkgpath):
+def read_package_info(tree, category, section, basepath, secpath, pkgpath):
     results = []
     repopath = os.path.join(secpath, pkgpath)
     logging.info(repopath)
@@ -140,7 +141,7 @@ def read_package_info(category, section, basepath, secpath, pkgpath):
                     deppkg, depver = re_packagename.match(pkgname).groups()
                     dependencies.append((name, deppkg, depver, rel))
             results.append((
-                (name, category, section, section2, pkgpath, version, release,
+                (name, tree, category, section, section2, pkgpath, version, release,
                  description, commit_time), pkgpath, pkgspec, uniq(dependencies)
             ))
     return results
@@ -175,15 +176,17 @@ def list_abbs_dir(basepath, diff=None):
                 yield category, section, path, pkgpath, True
 
 
-def scan_abbs_tree(cur, basepath):
+def scan_abbs_tree(cur, basepath, tree):
     executor = concurrent.futures.ThreadPoolExecutor(os.cpu_count())
     futures = []
     packages_old = {row[0]:row[1:] for row in cur.execute(
-        'SELECT name, category, section, directory FROM packages')}
+        'SELECT name, category, section, directory FROM packages WHERE tree = ?',
+        (tree,))}
     removed = []
     try:
         last_updated = cur.execute(
-            'SELECT commit_time FROM packages ORDER BY commit_time DESC LIMIT 1'
+            'SELECT commit_time FROM packages'
+            ' WHERE tree = ? ORDER BY commit_time DESC LIMIT 1', (tree,)
             ).fetchone()[0]
         logging.info('using git diff from %d' % last_updated)
     except Exception:
@@ -191,8 +194,8 @@ def scan_abbs_tree(cur, basepath):
     diff = read_diff(basepath, last_updated) if last_updated else None
     for category, section, path, pkgpath, exists in list_abbs_dir(basepath, diff):
         if exists:
-            futures.append(executor.submit(
-                read_package_info, category, section, basepath, path, pkgpath))
+            futures.append(executor.submit(read_package_info,
+                tree, category, section, basepath, path, pkgpath))
         else:
             removed.extend(r[0] for r in cur.execute(
                 'SELECT name FROM packages WHERE'
@@ -205,12 +208,13 @@ def scan_abbs_tree(cur, basepath):
             name = pkginfo[0]
             if name in packages_old:
                 cat, sec, ppath = packages_old[name]
-                if (cat, sec, ppath) != (pkginfo[1], pkginfo[2], pkgpath):
+                if (cat, sec, ppath) != (pkginfo[2], pkginfo[3], pkgpath):
                     logging.error(
                         'duplicate package "%s" found in %s-%s/%s and %s-%s/%s',
-                        name, cat, sec, ppath, pkginfo[1], pkginfo[2], pkgpath
+                        name, cat, sec, ppath, pkginfo[2], pkginfo[3], pkgpath
                     )
-            cur.execute('REPLACE INTO packages VALUES (?,?,?,?,?,?,?,?,?)', pkginfo)
+            cur.execute('REPLACE INTO packages VALUES (?,?,?,?,?,?,?,?,?,?)',
+                        pkginfo)
             pkgspec_old = [k[0] for k in cur.execute(
                 'SELECT key FROM package_spec WHERE package = ? ORDER BY key ASC',
                 (name,))]
@@ -235,11 +239,11 @@ def scan_abbs_tree(cur, basepath):
     logging.info('Done.')
 
 
-def main(dbfile, path):
+def main(dbfile, path, tree):
     db = sqlite3.connect(dbfile)
     cur = db.cursor()
     init_db(cur)
-    scan_abbs_tree(cur, path)
+    scan_abbs_tree(cur, path, tree)
     db.commit()
 
 if __name__ == '__main__':
