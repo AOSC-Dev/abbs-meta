@@ -3,7 +3,6 @@
 
 import os
 import re
-import io
 import sqlite3
 import logging
 import subprocess
@@ -15,6 +14,7 @@ logging.basicConfig(
 
 re_variable = re.compile(b'^\\s*([a-zA-Z_][a-zA-Z0-9_]*)=')
 re_packagename = re.compile(r'^([a-z0-9][a-z0-9+.-]*)(.*)$')
+abbs_categories = frozenset(('core-', 'base-', 'extra-'))
 
 
 def init_db(cur):
@@ -98,6 +98,18 @@ def read_commit_time(basepath, filename):
     return int(outs.decode().strip())
 
 
+def read_diff(basepath, lastupdate):
+    # gitrevisions(7):
+    # Note that this looks up the state of your local ref at a given time
+    outs, errs = subprocess.Popen(
+        ('git', 'diff', '--name-only', '@{@%d}' % lastupdate),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        cwd=basepath).communicate()
+    if errs:
+        logging.warning('git %s: %s', basepath, errs.decode().rstrip())
+    return outs.decode().splitlines()
+
+
 def read_package_info(category, section, basepath, secpath, pkgpath):
     results = []
     repopath = os.path.join(secpath, pkgpath)
@@ -134,34 +146,70 @@ def read_package_info(category, section, basepath, secpath, pkgpath):
     return results
 
 
+def list_abbs_dir(basepath, diff=None):
+    if diff:
+        pkgs = set()
+        for filename in diff:
+            pathspl = filename.split('/', 2)
+            if not (len(pathspl) > 2 and
+                    any(pathspl[0].startswith(x) for x in abbs_categories)):
+                continue
+            path, pkgpath = pathspl[:2]
+            category, section = path.split('-')
+            if (path, pkgpath) not in pkgs:
+                fullpath = os.path.join(basepath, path, pkgpath)
+                exists = (os.path.isdir(fullpath) and not os.path.islink(fullpath))
+                yield category, section, path, pkgpath, exists
+                pkgs.add((path, pkgpath))
+    else:
+        for path in os.listdir(basepath):
+            secpath = os.path.join(basepath, path)
+            if not (os.path.isdir(secpath) and
+                    any(path.startswith(x) for x in abbs_categories)):
+                continue
+            category, section = path.split('-')
+            for pkgpath in os.listdir(secpath):
+                fullpath = os.path.join(secpath, pkgpath)
+                if not os.path.isdir(fullpath) or os.path.islink(fullpath):
+                    continue
+                yield category, section, path, pkgpath, True
+
+
 def scan_abbs_tree(cur, basepath):
     executor = concurrent.futures.ThreadPoolExecutor(os.cpu_count())
     futures = []
-    packages = {}
-    categories = ('base-', 'extra-')
-    for path in os.listdir(basepath):
-        secpath = os.path.join(basepath, path)
-        if not (os.path.isdir(secpath) and any(path.startswith(x) for x in categories)):
-            continue
-        category, section = path.split('-')
-        for pkgpath in os.listdir(secpath):
-            fullpath = os.path.join(secpath, pkgpath)
-            if not os.path.isdir(fullpath) or os.path.islink(fullpath):
-                continue
+    packages_old = {row[0]:row[1:] for row in cur.execute(
+        'SELECT name, category, section, directory FROM packages')}
+    removed = []
+    try:
+        last_updated = cur.execute(
+            'SELECT commit_time FROM packages ORDER BY commit_time DESC LIMIT 1'
+            ).fetchone()[0]
+        logging.info('using git diff from %d' % last_updated)
+    except Exception:
+        last_updated = None
+    diff = read_diff(basepath, last_updated) if last_updated else None
+    for category, section, path, pkgpath, exists in list_abbs_dir(basepath, diff):
+        if exists:
             futures.append(executor.submit(
                 read_package_info, category, section, basepath, path, pkgpath))
+        else:
+            removed.extend(r[0] for r in cur.execute(
+                'SELECT name FROM packages WHERE'
+                ' category = ? AND section = ? AND directory = ?',
+                (category, section, pkgpath)
+            ))
     for future in futures:
         for result in future.result():
             pkginfo, pkgpath, pkgspec, pkgdep = result
             name = pkginfo[0]
-            if name in packages:
-                cat, sec, ppath = packages[name]
-                logging.error(
-                    'duplicate package "%s" found in %s-%s/%s and %s-%s/%s',
-                    name, cat, sec, ppath, pkginfo[1], pkginfo[2], pkgpath
-                )
-            else:
-                packages[name] = (pkginfo[1], pkginfo[2], pkgpath)
+            if name in packages_old:
+                cat, sec, ppath = packages_old[name]
+                if (cat, sec, ppath) != (pkginfo[1], pkginfo[2], pkgpath):
+                    logging.error(
+                        'duplicate package "%s" found in %s-%s/%s and %s-%s/%s',
+                        name, cat, sec, ppath, pkginfo[1], pkginfo[2], pkgpath
+                    )
             cur.execute('REPLACE INTO packages VALUES (?,?,?,?,?,?,?,?,?)', pkginfo)
             pkgspec_old = [k[0] for k in cur.execute(
                 'SELECT key FROM package_spec WHERE package = ? ORDER BY key ASC',
@@ -178,8 +226,6 @@ def scan_abbs_tree(cur, basepath):
                 cur.execute('DELETE FROM package_dependencies WHERE package = ?',
                     (pkginfo[0],))
             cur.executemany('REPLACE INTO package_dependencies VALUES (?,?,?,?)', pkgdep)
-    packages_old = set(x[0] for x in cur.execute('SELECT name FROM packages'))
-    removed = packages_old.difference(packages.keys())
     if removed:
         for name in removed:
             cur.execute('DELETE FROM packages WHERE name = ?', (name,))
