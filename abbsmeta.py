@@ -190,6 +190,9 @@ def scan_abbs_tree(cur, basepath, tree):
     packages_old = {row[0]:row[1:] for row in cur.execute(
         'SELECT name, category, section, directory FROM packages WHERE tree = ?',
         (tree,))}
+    packages_other = {row[0]:row[1:] for row in cur.execute(
+        'SELECT name, category, section, directory, tree'
+        ' FROM packages WHERE tree != ?', (tree,))}
     removed = []
     try:
         last_updated = cur.execute(
@@ -221,6 +224,14 @@ def scan_abbs_tree(cur, basepath, tree):
                         'duplicate package "%s" found in %s-%s/%s and %s-%s/%s',
                         name, cat, sec, ppath, pkginfo[2], pkginfo[3], pkgpath
                     )
+            elif name in packages_other:
+                cat, sec, ppath, othertree = packages_other[name]
+                logging.error(
+                    'duplicate package "%s" found in %s/%s-%s/%s and %s/%s-%s/%s',
+                    name, othertree, cat, sec, ppath,
+                    tree, pkginfo[2], pkginfo[3], pkgpath
+                )
+                continue
             cur.execute('REPLACE INTO packages VALUES (?,?,?,?,?,?,?,?,?,?)',
                         pkginfo)
             pkgspec_old = [k[0] for k in cur.execute(
