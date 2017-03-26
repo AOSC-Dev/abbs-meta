@@ -152,26 +152,34 @@ def list_abbs_dir(basepath, diff=None):
         pkgs = set()
         for filename in diff:
             pathspl = filename.split('/', 2)
-            if not (len(pathspl) > 2 and
-                    any(pathspl[0].startswith(x) for x in abbs_categories)):
+            if not len(pathspl) > 2:
                 continue
             path, pkgpath = pathspl[:2]
-            category, section = path.split('-')
+            if any(path.startswith(x) for x in abbs_categories):
+                category, section = path.split('-', 1)
+            else:
+                category, section = None, path
             if (path, pkgpath) not in pkgs:
                 fullpath = os.path.join(basepath, path, pkgpath)
                 exists = (os.path.isdir(fullpath) and not os.path.islink(fullpath))
+                if exists and not os.path.isfile(os.path.join(fullpath, 'spec')):
+                    continue
                 yield category, section, path, pkgpath, exists
                 pkgs.add((path, pkgpath))
     else:
         for path in os.listdir(basepath):
             secpath = os.path.join(basepath, path)
-            if not (os.path.isdir(secpath) and
-                    any(path.startswith(x) for x in abbs_categories)):
+            if not os.path.isdir(secpath):
                 continue
-            category, section = path.split('-')
+            if any(path.startswith(x) for x in abbs_categories):
+                category, section = path.split('-', 1)
+            else:
+                category, section = None, path
             for pkgpath in os.listdir(secpath):
                 fullpath = os.path.join(secpath, pkgpath)
                 if not os.path.isdir(fullpath) or os.path.islink(fullpath):
+                    continue
+                elif not os.path.isfile(os.path.join(fullpath, 'spec')):
                     continue
                 yield category, section, path, pkgpath, True
 
