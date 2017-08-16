@@ -2,269 +2,472 @@
 # -*- coding: utf-8 -*-
 
 import os
+import io
 import re
+import time
 import sqlite3
 import logging
-import subprocess
+import argparse
 import collections
-import concurrent.futures
+
+import fossil
+import bashvar
+import reposync
 
 logging.basicConfig(
     format='%(asctime)s %(levelname).1s %(message)s', level=logging.INFO)
 
 re_variable = re.compile(b'^\\s*([a-zA-Z_][a-zA-Z0-9_]*)=')
 re_packagename = re.compile(r'^([a-z0-9][a-z0-9+.-]*)(.*)$')
+re_commitmsg = re.compile(r'^\[?([a-z0-9][a-z0-9+. ,{}*/-]*)\]?\:? (.+)$', re.M)
+re_commitrevert = re.compile(r'^(?:Revert ")+(.+?)"+$', re.M)
 abbs_categories = frozenset(('core-', 'base-', 'extra-'))
+repo_ignore = frozenset((
+    '.git', '.githubwiki', '.abbs-repo', 'repo-spec',
+    'groups', 'newpak', 'assets'
+))
 
-
-def init_db(cur):
-    cur.execute('PRAGMA journal_mode=WAL')
-    cur.execute('CREATE TABLE IF NOT EXISTS packages ('
-                'name TEXT PRIMARY KEY,'  # coreutils
-                'tree TEXT,'      # abbs tree name
-                'category TEXT,'  # base
-                'section TEXT,'  # utils
-                'pkg_section TEXT,'  # (PKGSEC)
-                'directory TEXT,' # second-level dir in aosc-os-abbs
-                'version TEXT,'  # 8.25
-                'release TEXT,'  # None
-                'description TEXT,'
-                'commit_time INTEGER' # git commit time
-                ')')
-    cur.execute('CREATE TABLE IF NOT EXISTS package_spec ('
-                'package TEXT,'
-                'key TEXT,'
-                'value TEXT,'
-                'PRIMARY KEY (package, key),'
-                'FOREIGN KEY(package) REFERENCES packages(name)'
-                ')')
-    cur.execute('CREATE TABLE IF NOT EXISTS package_dependencies ('
-                'package TEXT,'
-                'dependency TEXT,'
-                'version TEXT,'
-                # PKGDEP, PKGRECOM, PKGBREAK, PKGCONFL, PKGREP, BUILDDEP
-                'relationship TEXT,'
-                'PRIMARY KEY (package, dependency, relationship),'
-                'FOREIGN KEY(package) REFERENCES packages(name)'
-                # we may have unmatched dependency package name
-                # 'FOREIGN KEY(dependency) REFERENCES packages(name)'
-                ')')
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_package_spec'
-                ' ON package_spec (package)')
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_package_dependencies'
-                ' ON package_dependencies (package)')
-
+FileChange = collections.namedtuple('FileChange', 'status name rid islink')
 
 def uniq(seq):  # Dave Kirby
     # Order preserving
     seen = set()
     return [x for x in seq if x not in seen and not seen.add(x)]
 
+class Package:
+    def __init__(self, tree, secpath, directory, name=None):
+        self.name = name
+        self.tree = tree
+        self.secpath = secpath
+        self.category, self.section = secpath.split('-', 1)
+        self.directory = directory
+        self.pkg_section = None
+        self.version = None
+        self.release = None
+        self.epoch = None
+        self.description = None
+        self.commit_time = None
+        self.spec = collections.OrderedDict()
+        self.dependencies = []
 
-def read_bash_vars(filename):
-    # we don't specify encoding here because the env will do.
-    var = []
-    stdin = []
-    with open(filename, 'rb') as sh:
-        for ln in sh:
-            match = re_variable.match(ln)
-            if match:
-                var.append(match.group(1))
-            stdin.append(ln)
-        stdin.append(b'\n')
-    var = uniq(var)
-    for v in var:
-        # workaround variables containing newlines
-        stdin.append(b'echo "${%s//$\'\\n\'/\\\\n}"\n' % v)
-    outs, errs = subprocess.Popen(
-        ('bash',), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE).communicate(b''.join(stdin))
-    if errs:
-        logging.warning('%s: %s', filename, errs.decode().rstrip())
-    lines = [l.replace('\\n', '\n') for l in outs.decode().splitlines()]
-    try:
-        assert len(var) == len(lines)
-    except AssertionError:
-        logging.exception(filename)
-    return collections.OrderedDict(zip(map(bytes.decode, var), lines))
+    def __repr__(self):
+        return "Package('%s', '%s', '%s', %r)" % (
+                self.tree, self.secpath, self.directory, self.name)
 
+    def __eq__(self, other):
+        return ((self.__class__.__name__, self.tree,
+                self.secpath, self.directory, self.name) ==
+                (other.__class__.__name__, other.tree,
+                other.secpath, other.directory, self.name))
 
-def read_commit_time(basepath, filename):
-    outs, errs = subprocess.Popen(
-        ('git', 'log', '-n', '1', '--pretty=format:%at', '--', filename),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        cwd=basepath).communicate()
-    if errs:
-        logging.warning('git %s: %s', basepath, errs.decode().rstrip())
-    return int(outs.decode().strip())
+    def load_spec(self, fp, filename=None):
+        result = bashvar.read_bashvar(fp, filename)
+        self.spec.update(result)
+        self.version = self.spec.pop('VER', None)
+        self.release = self.spec.pop('REL', None)
 
+    def load_defines(self, fp, filename=None):
+        result = bashvar.read_bashvar(fp, filename)
+        self.spec.update(result)
+        name = self.spec.pop('PKGNAME', None)
+        if not name:
+            # we assume it is a define for some specific architecture
+            return
+        self.name = name
+        self.pkg_section = self.spec.pop('PKGSEC', None)
+        self.description = self.spec.pop('PKGDES', None)
+        self.epoch = self.spec.pop('PKGEPOCH', None)
+        dependencies = []
+        for rel in ('PKGDEP', 'PKGRECOM', 'PKGBREAK', 'PKGCONFL', 'PKGREP',
+                    'BUILDDEP', 'PKGDEP_DPKG', 'PKGDEP_RPM'):
+            for pkgname in self.spec.pop(rel, '').split():
+                deppkg, depver = re_packagename.match(pkgname).groups()
+                dependencies.append((name, deppkg, depver, rel))
+        self.dependencies = uniq(dependencies)
 
-def read_diff(basepath, lastupdate):
-    # gitrevisions(7):
-    # Note that this looks up the state of your local ref at a given time
-    outs, errs = subprocess.Popen(
-        ('git', 'diff', '--name-only', '@{@%d}' % lastupdate),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        cwd=basepath).communicate()
-    if errs:
-        logging.warning('git %s: %s', basepath, errs.decode().rstrip())
-    return outs.decode().splitlines()
+class PackageGroup(Package):
+    def __init__(self, tree, secpath, directory, name=None):
+        self.name = name or directory
+        self.tree = tree
+        self.secpath = secpath
+        if any(secpath.startswith(x) for x in abbs_categories):
+            self.category, self.section = secpath.split('-', 1)
+        else:
+            self.category, self.section = None, secpath
+        self.directory = directory
+        self.commit_time = None
+        self.spec = collections.OrderedDict()
 
+    def __repr__(self):
+        return "PackageGroup('%s', '%s', '%s', %r)" % (
+                self.tree, self.secpath, self.directory, self.name)
 
-def read_package_info(tree, category, section, basepath, secpath, pkgpath):
-    results = []
-    repopath = os.path.join(secpath, pkgpath)
-    logging.info(repopath)
-    fullpath = os.path.join(basepath, repopath)
-    spec = read_bash_vars(os.path.join(fullpath, 'spec'))
-    commit_time = read_commit_time(basepath, os.path.join(repopath, 'spec'))
-    for dirpath, dirnames, filenames in os.walk(fullpath):
-        for filename in filenames:
-            if filename != 'defines':
-                continue
-            pkgspec = spec.copy()
-            pkgspec.update(read_bash_vars(
-                os.path.join(dirpath, 'defines')))
-            name = pkgspec.pop('PKGNAME', None)
-            if not name:
-                # we assume it is a define for some specific architecture
-                # print(dirpath, pkgspec)
-                continue
-            section2 = pkgspec.pop('PKGSEC', None)
-            description = pkgspec.pop('PKGDES', None)
-            version = pkgspec.pop('VER', None)
-            release = pkgspec.pop('REL', None)
-            dependencies = []
-            for rel in ('PKGDEP', 'PKGRECOM', 'PKGBREAK', 'PKGCONFL', 'PKGREP',
-                        'BUILDDEP', 'PKGDEP_DPKG', 'PKGDEP_RPM'):
-                for pkgname in pkgspec.pop(rel, '').split():
-                    deppkg, depver = re_packagename.match(pkgname).groups()
-                    dependencies.append((name, deppkg, depver, rel))
-            results.append((
-                (name, tree, category, section, section2, pkgpath, version, release,
-                 description, commit_time), pkgpath, pkgspec, uniq(dependencies)
+    def __eq__(self, other):
+        return ((self.__class__.__name__, self.tree,
+                self.secpath, self.directory) ==
+                (other.__class__.__name__, other.tree,
+                other.secpath, other.directory))
+
+    def package(self, defines_fp, defines_filename=None):
+        cls = Package(self.tree, self.secpath, self.directory, self.name)
+        cls.commit_time = self.commit_time
+        cls.spec = self.spec.copy()
+        cls.load_defines(defines_fp, defines_filename)
+        return cls
+
+def parse_commit_msg(name, text):
+    if text.startswith('Merge branch '):
+        return
+    match = re_commitrevert.match(text)
+    if match:
+        text = match.group(1)
+    match = re_commitmsg.match(text)
+    if match:
+        if name in match.group(1):
+            return match.group(2)
+    return text
+
+class SourceRepo:
+    def __init__(self, name, basepath, markpath, dbfile, mainbranch, branches=None):
+        # tree name
+        self.name = name
+        self.basepath = basepath
+        self.markpath = markpath
+        self.dbfile = dbfile
+        self.db = sqlite3.connect(dbfile)
+        self.branches = branches
+        self.mainbranch = mainbranch
+        assert mainbranch in branches
+        self.gitpath = os.path.join(basepath, name)
+        self.fossilpath = os.path.join(basepath, name + '.fossil')
+        # db for syncing among Fossil, Git and Abbs-meta database
+        self.marksdbfile = os.path.join(markpath, name + '-marks.db')
+        self.marksdb = sqlite3.connect(self.marksdbfile)
+        self.db.row_factory = self.marksdb.row_factory = sqlite3.Row
+        if not os.path.isfile(self.fossilpath):
+            self.sync()
+        self.fossil = fossil.Repo(self.fossilpath)
+        self._cache_flist = fossil.LRUCache(64)
+
+    def __repr__(self):
+        return "<SourceRepo %s, basepath=%s>" % (self.name, self.basepath)
+
+    def update(self, sync=True, reset=False):
+        self.init_db()
+        if sync:
+            logging.info('Syncing...')
+            self.sync()
+        if reset:
+            self.reset_progress()
+        try:
+            self.repo_update()
+        except KeyboardInterrupt:
+            logging.error('Interrupted.')
+        except:
+            logging.exception('Error.')
+        self.close()
+
+    def init_db(self):
+        cur = self.db.cursor()
+        cur.execute('PRAGMA journal_mode=WAL')
+        cur.execute('CREATE TABLE IF NOT EXISTS trees ('
+                    'name TEXT PRIMARY KEY,'
+                    'category TEXT,' # base, bsp
+                    'url TEXT,' # github
+                    'priority INTEGER,'
+                    'default_branch TEXT'
+                    ')')
+        cur.execute('CREATE TABLE IF NOT EXISTS packages ('
+                    'name TEXT PRIMARY KEY,'  # coreutils
+                    'tree TEXT,'     # abbs tree name
+                    'category TEXT,' # base
+                    'section TEXT,'  # utils
+                    'pkg_section TEXT,'  # (PKGSEC)
+                    'directory TEXT,' # second-level dir in aosc-os-abbs
+                    'description TEXT'
+                    ')')
+        cur.execute('CREATE TABLE IF NOT EXISTS package_versions ('
+                    'package TEXT,'  # coreutils
+                    'branch TEXT,'   # abbs tree branch
+                    'version TEXT,'  # 8.25
+                    'release TEXT,'  # -1
+                    'epoch TEXT,'    # 1:
+                    'commit_time INTEGER,'
+                    'PRIMARY KEY (package, branch)'
+                    ')')
+        cur.execute('CREATE TABLE IF NOT EXISTS package_spec ('
+                    'package TEXT,'
+                    'key TEXT,'
+                    'value TEXT,'
+                    'PRIMARY KEY (package, key),'
+                    'FOREIGN KEY(package) REFERENCES packages(name)'
+                    ')')
+        cur.execute('CREATE TABLE IF NOT EXISTS package_dependencies ('
+                    'package TEXT,'
+                    'dependency TEXT,'
+                    'version TEXT,'
+                    # PKGDEP, PKGRECOM, PKGBREAK, PKGCONFL, PKGREP, BUILDDEP
+                    'relationship TEXT,'
+                    'PRIMARY KEY (package, dependency, relationship),'
+                    'FOREIGN KEY(package) REFERENCES packages(name)'
+                    # we may have unmatched dependency package name
+                    # 'FOREIGN KEY(dependency) REFERENCES packages(name)'
+                    ')')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_package_versions'
+                    ' ON package_versions (package, branch)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_package_spec'
+                    ' ON package_spec (package)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_package_dependencies'
+                    ' ON package_dependencies (package)')
+        mcur = self.marksdb.cursor()
+        mcur.execute('PRAGMA journal_mode=WAL')
+        mcur.execute('CREATE TABLE IF NOT EXISTS package_rel ('
+                    'rid INTEGER, package TEXT, '
+                    'version TEXT, release TEXT, epoch TEXT, '
+                    'message TEXT, '
+                    'PRIMARY KEY (rid, package)'
+                    ')')
+        self.db.commit()
+        self.marksdb.commit()
+
+    def sync(self):
+        reposync.sync(self.gitpath, self.fossilpath, self.markpath)
+
+    def file_list(self, mid):
+        try:
+            return self._cache_flist[mid]
+        except KeyError:
+            self._cache_flist[mid] = flist = collections.OrderedDict((
+                (row[0], (row[1], row[2] if len(row) > 2 else ''))
+                for row in self.fossil.manifest(mid).F
             ))
-    return results
+            return flist
 
+    def getfile(self, mid, path, text=False):
+        uuid = self.file_list(mid)[path][0]
+        blob = self.fossil.file(uuid).blob
+        if text:
+            return uuid, io.StringIO(blob.decode('utf-8'))
+        else:
+            return uuid, io.BytesIO(blob)
 
-def list_abbs_dir(basepath, diff=None):
-    if diff:
+    def file_change(self, mid, full=False):
+        ret = []
+        if full:
+            for fn, v in self.file_list(mid).items():
+                ret.append(FileChange('+', fn,
+                    self.fossil.to_rid(v[0]), ('l' in v[1])))
+            return ret
+        for fid, pid, fn, pfn, mperm in self.fossil.execute(
+            'SELECT mlink.fid, mlink.pid, fn.name fn, pfn.name pfn, mlink.mperm '
+            'FROM mlink '
+            'LEFT JOIN filename fn ON fn.fnid=mlink.fnid '
+            'LEFT JOIN filename pfn ON pfn.fnid=mlink.pfnid '
+            'WHERE mid = ?', (mid,)):
+            if fid == 0:
+                # deleted
+                ret.append(FileChange('-', fn, pid, mperm == 2))
+            elif pfn:
+                # renamed
+                ret.append(FileChange('-', pfn, pid, mperm == 2))
+                ret.append(FileChange('+', fn, fid, mperm == 2))
+            else:
+                # added if pid == 0 else changed
+                ret.append(FileChange('+', fn, fid, mperm == 2))
+        return ret
+
+    def file_mtime(self, mid, path):
+        return int(self.fossil.execute(
+                'SELECT round((mtime-2440587.5)*86400) FROM event '
+                'LEFT JOIN mlink ON mlink.mid = event.objid '
+                'WHERE mlink.fid = (SELECT rid FROM blob WHERE uuid = ?) '
+                'ORDER BY mtime ASC '
+                'LIMIT 1', (self.file_list(mid)[path][0],)).fetchone()[0])
+
+    def exists(self, mid, path, isdir=False, ignorelink=False):
+        for fn, v in self.file_list(mid).items():
+            if fn == path:
+                if ignorelink and 'l' in v[1]:
+                    return False
+                else:
+                    return True
+            elif isdir and fn.startswith(path + '/'):
+                return True
+        return False
+
+    def branches_of_commit(self, mid):
+        mcur = self.marksdb.cursor()
+        results = frozenset(x[0] for x in mcur.execute(
+            "SELECT tagname FROM branches WHERE rid=?", (mid,)).fetchall())
+        if not self.branches:
+            return list(results)
+        branches = [b for b in self.branches if b in results]
+        return branches
+
+    def list_update(self, mid, full=False):
         pkgs = set()
-        for filename in diff:
-            pathspl = filename.split('/', 2)
+        diff = self.file_change(mid, full)
+        for change in diff:
+            pathspl = change.name.split('/', 2)
             if not len(pathspl) > 2:
                 continue
             path, pkgpath = pathspl[:2]
-            if any(path.startswith(x) for x in abbs_categories):
-                category, section = path.split('-', 1)
-            else:
-                category, section = None, path
-            if (path, pkgpath) not in pkgs:
-                fullpath = os.path.join(basepath, path, pkgpath)
-                exists = (os.path.isdir(fullpath) and not os.path.islink(fullpath))
-                if exists and not os.path.isfile(os.path.join(fullpath, 'spec')):
+            if path in repo_ignore:
+                continue
+            elif (path, pkgpath) not in pkgs:
+                if (change.status == '+' and not self.exists(
+                    mid, os.path.join(path, pkgpath, 'spec'), ignorelink=True)):
                     continue
-                yield category, section, path, pkgpath, exists
+                yield PackageGroup(self.name, path, pkgpath), change.status
                 pkgs.add((path, pkgpath))
-    else:
-        for path in os.listdir(basepath):
-            secpath = os.path.join(basepath, path)
-            if not os.path.isdir(secpath):
-                continue
-            if any(path.startswith(x) for x in abbs_categories):
-                category, section = path.split('-', 1)
-            else:
-                category, section = None, path
-            for pkgpath in os.listdir(secpath):
-                fullpath = os.path.join(secpath, pkgpath)
-                if not os.path.isdir(fullpath) or os.path.islink(fullpath):
-                    continue
-                elif not os.path.isfile(os.path.join(fullpath, 'spec')):
-                    continue
-                yield category, section, path, pkgpath, True
 
+    def read_package_info(self, mid, pkggroup):
+        results = []
+        repopath = os.path.join(pkggroup.secpath, pkggroup.directory)
+        logging.debug(pkggroup)
+        filelist = self.file_list(mid)
+        uuid, specstr = self.getfile(mid, os.path.join(repopath, 'spec'), True)
+        pkggroup.load_spec(specstr, uuid[:16])
+        pkggroup.commit_time = self.file_mtime(mid, os.path.join(repopath, 'spec'))
+        for path, fattr in filelist.items():
+            if path.startswith(repopath + '/'):
+                dirpath, filename = os.path.split(path)
+                if filename != 'defines':
+                    continue
+                uuid, defines = self.getfile(
+                    mid, os.path.join(dirpath, 'defines'), True)
+                pkg = pkggroup.package(defines, uuid[:16])
+                results.append(pkg)
+        return results
 
-def scan_abbs_tree(cur, basepath, tree):
-    executor = concurrent.futures.ThreadPoolExecutor(os.cpu_count())
-    futures = []
-    packages_old = {row[0]:row[1:] for row in cur.execute(
-        'SELECT name, category, section, directory FROM packages WHERE tree = ?',
-        (tree,))}
-    packages_other = {row[0]:row[1:] for row in cur.execute(
-        'SELECT name, category, section, directory, tree'
-        ' FROM packages WHERE tree != ?', (tree,))}
-    removed = []
-    try:
-        last_updated = cur.execute(
-            'SELECT commit_time FROM packages'
-            ' WHERE tree = ? ORDER BY commit_time DESC LIMIT 1', (tree,)
-            ).fetchone()[0]
-        logging.info('using git diff from %d' % last_updated)
-    except Exception:
-        last_updated = None
-    diff = read_diff(basepath, last_updated) if last_updated else None
-    for category, section, path, pkgpath, exists in list_abbs_dir(basepath, diff):
-        if exists:
-            futures.append(executor.submit(read_package_info,
-                tree, category, section, basepath, path, pkgpath))
-        else:
-            removed.extend(r[0] for r in cur.execute(
-                'SELECT name FROM packages WHERE'
-                ' category = ? AND section = ? AND directory = ?',
-                (category, section, pkgpath)
-            ))
-    for future in futures:
-        for result in future.result():
-            pkginfo, pkgpath, pkgspec, pkgdep = result
-            name = pkginfo[0]
-            if name in packages_old:
-                cat, sec, ppath = packages_old[name]
-                if (cat, sec, ppath) != (pkginfo[2], pkginfo[3], pkgpath):
-                    logging.error(
-                        'duplicate package "%s" found in %s-%s/%s and %s-%s/%s',
-                        name, cat, sec, ppath, pkginfo[2], pkginfo[3], pkgpath
-                    )
-            elif name in packages_other:
-                cat, sec, ppath, othertree = packages_other[name]
-                logging.error(
-                    'duplicate package "%s" found in %s/%s-%s/%s and %s/%s-%s/%s',
-                    name, othertree, cat, sec, ppath,
-                    tree, pkginfo[2], pkginfo[3], pkgpath
-                )
-                continue
-            cur.execute('REPLACE INTO packages VALUES (?,?,?,?,?,?,?,?,?,?)',
-                        pkginfo)
-            pkgspec_old = [k[0] for k in cur.execute(
-                'SELECT key FROM package_spec WHERE package = ? ORDER BY key ASC',
-                (name,))]
-            if pkgspec_old != sorted(pkgspec.keys()):
-                logging.debug('updated spec: %s', name)
-                cur.execute('DELETE FROM package_spec WHERE package = ?', (name,))
-            for k, v in pkgspec.items():
-                cur.execute('REPLACE INTO package_spec VALUES (?,?,?)', (name, k, v))
-            pkgdep_old = cur.execute(
-                'SELECT dependency, relationship FROM package_dependencies WHERE package = ? ORDER BY dependency, relationship ASC', (name,)).fetchall()
-            if pkgdep_old != sorted((x[1], x[3]) for x in pkgdep):
-                logging.debug('updated dependencies: %s', name)
+    def update_package(self, mid, pkg):
+        cur = self.db.cursor()
+        existing = cur.execute(
+            'SELECT tree, category, section, directory '
+            'FROM packages WHERE name=?', (pkg.name,)).fetchone()
+        if not existing:
+            pass
+        elif existing[0] != self.name:
+            logging.warning(
+                'duplicate package "%s" found in different trees '
+                '%s/%s-%s/%s and %s/%s-%s/%s', pkg.name,
+                existing[0], existing[1], existing[2], existing[3],
+                self.name, pkg.category, pkg.section, pkg.directory
+            )
+            # trees with lower priority will not override
+            return
+        elif ((pkg.category, pkg.section, pkg.directory) !=
+              tuple(existing[1:])):
+            logging.warning(
+                'duplicate package "%s" found in %s-%s/%s and %s-%s/%s',
+                pkg.name, existing[1], existing[2], existing[3],
+                pkg.category, pkg.section, pkg.directory
+            )
+        cur.execute(
+            'REPLACE INTO packages VALUES (?,?,?,?,?,?,?)',
+            (pkg.name, self.name, pkg.category, pkg.section,
+            pkg.pkg_section, pkg.directory, pkg.description)
+        )
+        for branch in self.branches_of_commit(mid):
+            cur.execute(
+                'REPLACE INTO package_versions VALUES (?,?,?,?,?,?)',
+                (pkg.name, branch, pkg.version, pkg.release,
+                pkg.epoch, pkg.commit_time)
+            )
+            if branch == self.mainbranch:
+                cur.execute('DELETE FROM package_spec WHERE package = ?', (pkg.name,))
+                for k, v in pkg.spec.items():
+                    cur.execute('REPLACE INTO package_spec VALUES (?,?,?)',
+                                (pkg.name, k, v))
                 cur.execute('DELETE FROM package_dependencies WHERE package = ?',
-                    (pkginfo[0],))
-            cur.executemany('REPLACE INTO package_dependencies VALUES (?,?,?,?)', pkgdep)
-    if removed:
-        for name in removed:
-            cur.execute('DELETE FROM packages WHERE name = ?', (name,))
-            cur.execute('DELETE FROM package_spec WHERE package = ?', (name,))
-            cur.execute('DELETE FROM package_dependencies WHERE package = ?', (name,))
-            logging.info('removed: ' + name)
-    logging.info('Done.')
+                            (pkg.name,))
+                cur.executemany('REPLACE INTO package_dependencies VALUES (?,?,?,?)',
+                                pkg.dependencies)
 
+    def scan_abbs_tree(self, mid):
+        cur = self.db.cursor()
+        mcur = self.marksdb.cursor()
+        exist = mcur.execute(
+            'SELECT 1 FROM package_rel WHERE rid = ?', (mid,)).fetchone()
+        if exist:
+            return
+        for pkggroup, change in self.list_update(mid):
+            if change == '-':
+                for row in cur.execute(
+                    'SELECT name FROM packages p '
+                    'WHERE category=? AND section=? AND directory=?',
+                    (pkggroup.category, pkggroup.section, pkggroup.directory)
+                    ).fetchall():
+                    name = row[0]
+                    for branch in self.branches_of_commit(mid):
+                        cur.execute('DELETE FROM package_versions WHERE '
+                                    'package=? AND branch=?', (name, branch))
+                    if not cur.execute(
+                        'SELECT 1 FROM package_versions WHERE package=?',
+                        (name,)).fetchone():
+                        cur.execute('DELETE FROM package_spec WHERE package=?',
+                                    (name,))
+                        cur.execute('DELETE FROM package_dependencies WHERE package=?',
+                                    (name,))
+                        cur.execute('DELETE FROM packages WHERE name=?', (name,))
+                        logging.info('removed: ' + name)
+            elif change == '+':
+                for pkg in self.read_package_info(mid, pkggroup):
+                    self.update_package(mid, pkg)
+                    cmsg = self.fossil.execute(
+                        'SELECT comment FROM event WHERE objid=?', (mid,)).fetchone()
+                    cmsg = parse_commit_msg(pkg.name, cmsg[0]) if cmsg else None
+                    if not cmsg:
+                        continue
+                    mcur.execute(
+                        'REPLACE INTO package_rel VALUES (?,?,?,?,?,?)',
+                        (mid, pkg.name, pkg.version, pkg.release, pkg.epoch, cmsg)
+                    )
 
-def main(dbfile, path, tree):
-    db = sqlite3.connect(dbfile)
-    cur = db.cursor()
-    init_db(cur)
-    scan_abbs_tree(cur, path, tree)
-    db.commit()
+    def repo_update(self):
+        cur = self.db.cursor()
+        last_update = cur.execute(
+            'SELECT commit_time FROM package_versions '
+            'ORDER BY commit_time DESC LIMIT 1').fetchone()
+        last_update = last_update[0] if last_update else 0
+        for mtime, mid in self.fossil.execute(
+            "SELECT round((mtime-2440587.5)*86400), objid FROM event "
+            "WHERE type='ci' AND mtime>? ORDER BY mtime",
+            (fossil.unix_to_julian(last_update),)).fetchall():
+            logging.info('%s: %d', time.strftime('%Y-%m-%d', time.gmtime(mtime)), mid)
+            self.scan_abbs_tree(mid)
+        logging.info('Done.')
+
+    def reset_progress(self):
+        cur = self.db.cursor()
+        cur.execute('DELETE FROM package_versions')
+        cur.execute('VACUUM')
+        mcur = self.marksdb.cursor()
+        mcur.execute('DELETE FROM package_rel')
+        mcur.execute('VACUUM')
+        self.db.commit()
+        self.marksdb.commit()
+
+    def close(self):
+        self.db.execute('PRAGMA optimize')
+        self.marksdb.execute('PRAGMA optimize')
+        self.db.commit()
+        self.marksdb.commit()
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate metadata database for abbs trees.")
+    parser.add_argument("-p", "--basepath", help="Directory with both Git and Fossil repositories", default=".", metavar='PATH')
+    parser.add_argument("-m", "--markpath", help="Directory with Git and Fossil sync marks", default=".", metavar='PATH')
+    parser.add_argument("-d", "--dbfile", help="Abbs meta database file", default="abbs.db", metavar='FILE')
+    parser.add_argument("-B", "--mainbranch", help="Git repo main branch name", default="master", metavar='BRANCH')
+    parser.add_argument("-b", "--branches", help="Branches to consider, seperated by comma (,)", default="staging,master,bugfix", metavar='BRANCH')
+    parser.add_argument("--no-sync", help="Don't sync Git and Fossil repos", action='store_true')
+    parser.add_argument("--reset", help="Reset sync status", action='store_true')
+    parser.add_argument("name", help="Repository / abbs tree name")
+    args = parser.parse_args()
+
+    repo = SourceRepo(args.name, args.basepath, args.markpath, args.dbfile, args.mainbranch, args.branches.split(','))
+    repo.update(not args.no_sync, args.reset)
 
 if __name__ == '__main__':
-    import sys
-    sys.exit(main(*sys.argv[1:]))
+    main()

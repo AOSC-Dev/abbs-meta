@@ -77,6 +77,9 @@ ParseException = pp.ParseException
 class VariableWarning(UserWarning):
     pass
 
+class ParseError(Exception):
+    pass
+
 def combine_value(tokens, variables):
     val = ''
     if tokens.get('quote') == '"':
@@ -118,7 +121,12 @@ def eval_bashvar_literal(source):
         if line['operator'] == '=':
             variables[line['varname']] = val
         elif line['operator'] == '+=':
-            variables[line['varname']] += val
+            if line['varname'] in variables:
+                variables[line['varname']] += val
+            else:
+                warnings.warn(
+                    'variable "%s" is undefined' % line['varname'], VariableWarning)
+                variables[line['varname']] = val
     return variables
 
 def uniq(seq):  # Dave Kirby
@@ -148,10 +156,8 @@ def eval_bashvar_ext(source, filename=None):
     if errs:
         logging.warning('%s: %s', filename, errs.decode('utf-8').rstrip())
     lines = [l.replace('\\n', '\n') for l in outs.decode('utf-8').splitlines()]
-    try:
-        assert len(var) == len(lines)
-    except AssertionError:
-        logging.exception(filename)
+    if len(var) != len(lines):
+        logging.error('%s: bash output not expected', filename)
     return collections.OrderedDict(zip(var, lines))
 
 def eval_bashvar(source, filename=None):
@@ -165,5 +171,5 @@ def eval_bashvar(source, filename=None):
     except pp.ParseException:
         return eval_bashvar_ext(source, filename)
 
-def read_bashvar(fp):
-    return eval_bashvar(fp.read(), getattr(fp, 'name', None))
+def read_bashvar(fp, filename=None):
+    return eval_bashvar(fp.read(), filename or getattr(fp, 'name', None))

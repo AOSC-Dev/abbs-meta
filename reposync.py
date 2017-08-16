@@ -16,11 +16,11 @@ FOSSIL = os.environ.get('FOSSIL', 'fossil')
 def touch(filename):
     open(filename, 'a').close()
 
-def store_marks(db, gitmarks, fossilmarks):
-    cur = db.cursor()
+def store_marks(cur, gitmarks, fossilmarks):
     cur.execute('CREATE TABLE IF NOT EXISTS marks ('
         'name TEXT UNIQUE, rid INT, uuid TEXT, githash TEXT'
     ')')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_marks ON marks (rid, githash)')
     with open(fossilmarks, 'r') as f:
         for ln in f:
             toks = ln.rstrip().split(' ')
@@ -34,10 +34,8 @@ def store_marks(db, gitmarks, fossilmarks):
             cur.execute(
                 'UPDATE marks SET githash=? WHERE name=?', (toks[1], toks[0])
             )
-    db.commit()
 
-def store_committers(db, committers):
-    cur = db.cursor()
+def store_committers(cur, committers):
     cur.execute('CREATE TABLE IF NOT EXISTS committers ('
         'email TEXT PRIMARY KEY, name TEXT'
     ')')
@@ -46,14 +44,47 @@ def store_committers(db, committers):
             'REPLACE INTO committers VALUES (?,?)',
             (k, v.most_common(1)[0][0])
         )
-    db.commit()
+
+def store_branches(cur, fossilpath):
+    sql = (
+        # find branch ancestors and tag them with all child branches
+        "WITH RECURSIVE t(rid, tagid) AS ("
+            "SELECT leaf.rid, tagxref.tagid FROM leaf "
+            "LEFT JOIN tagxref ON tagxref.rid=leaf.rid "
+            "LEFT JOIN tag ON tag.tagid=tagxref.tagid "
+            "WHERE tagxref.tagtype=2 AND tag.tagname LIKE 'sym-%' "
+            "UNION "
+            "SELECT plink.pid, t.tagid FROM t "
+            "INNER JOIN plink ON plink.cid=t.rid "
+        ") "
+        "INSERT OR IGNORE INTO main.branches "
+        "SELECT t.rid rid, t.tagid tagid, substr(tag.tagname, 5) tagname FROM t "
+        "LEFT JOIN tag ON tag.tagid=t.tagid "
+        "UNION "
+        # and the branch name as in repo
+        "SELECT tagxref.rid rid, tag.tagid tagid, substr(tag.tagname, 5) tagname "
+        "FROM tagxref "
+        "LEFT JOIN tag ON tag.tagid=tagxref.tagid "
+        "WHERE tagxref.tagtype=2 AND tag.tagname LIKE 'sym-%' "
+        "ORDER BY rid ASC, tagid ASC"
+    )
+    cur.execute('CREATE TABLE IF NOT EXISTS branches ('
+        'rid INTEGER, tagid INTEGER, tagname TEXT, '
+        'PRIMARY KEY (rid, tagid)'
+    ')')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_branches ON branches (rid)')
+    cur.execute('ATTACH DATABASE ? AS fossil', (fossilpath,))
+    cur.execute(sql)
 
 def sync(gitpath, fossilpath, markpath):
     committers = collections.defaultdict(collections.Counter)
     gitname = os.path.basename(os.path.abspath(gitpath.rstrip('/')))
     fossilname = os.path.splitext(os.path.basename(fossilpath))[0]
+    newfossil = False
     if not os.path.isfile(fossilpath):
+        newfossil = True
         subprocess.Popen((FOSSIL, 'new', '--sha1', fossilpath)).wait()
+        subprocess.Popen((FOSSIL, 'rebuild', '--wal', fossilpath)).wait()
     gitmarks = os.path.abspath(os.path.join(markpath, gitname + '.git-marks'))
     fossilmarks = os.path.abspath(os.path.join(markpath, fossilname + '.fossil-marks'))
     touch(gitmarks)
@@ -62,10 +93,11 @@ def sync(gitpath, fossilpath, markpath):
         (GIT, 'fast-export', '--all', '--signed-tags=strip',
         '--import-marks=' + gitmarks, '--export-marks=' + gitmarks),
         stdout=subprocess.PIPE, cwd=gitpath)
-    fossil = subprocess.Popen(
-        (FOSSIL, 'import', '--git', '--incremental',
-        '--import-marks', fossilmarks, '--export-marks', fossilmarks,
-        fossilpath), stdin=subprocess.PIPE)
+    fossilcmd = (FOSSIL, 'import', '--git', '--incremental',
+                 '--import-marks', fossilmarks, '--export-marks', fossilmarks)
+    if not newfossil:
+        fossilcmd += ('--no-rebuild',)
+    fossil = subprocess.Popen(fossilcmd + (fossilpath,), stdin=subprocess.PIPE)
     for line in git.stdout:
         match = re_committer.match(line)
         if match:
@@ -76,8 +108,17 @@ def sync(gitpath, fossilpath, markpath):
     git.wait()
     fossil.wait()
     marksdb = sqlite3.connect(os.path.join(markpath, fossilname + '-marks.db'))
-    store_marks(marksdb, gitmarks, fossilmarks)
-    store_committers(marksdb, committers)
+    cur = marksdb.cursor()
+    try:
+        cur.execute('PRAGMA journal_mode=WAL')
+        store_marks(cur, gitmarks, fossilmarks)
+        store_committers(cur, committers)
+        store_branches(cur, fossilpath)
+        cur.execute('PRAGMA optimize')
+        if newfossil:
+            cur.execute('VACUUM')
+    finally:
+        marksdb.commit()
 
 if __name__ == '__main__':
     sync(*sys.argv[1:])
