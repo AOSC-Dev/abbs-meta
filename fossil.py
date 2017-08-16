@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os
 import io
-import sys
 import time
 import zlib
 import struct
 import sqlite3
 import calendar
+import collections
 
 unsigned_to_signed = lambda v: v-0x100000000 if v & 0x80000000 else v
 utf8_decode = lambda b: b.decode('utf-8')
 text_escape = lambda s: s.replace('\\', '\\\\').replace(' ', '\\s').replace('\n', '\\n')
 text_unescape = lambda s: s.replace('\\s', ' ').replace('\\n', '\n').replace('\\\\', '\\')
 parse_dt = lambda s: calendar.timegm(time.strptime(s[:19], '%Y-%m-%dT%H:%M:%S'))
+julian_to_unix = lambda t: (t-2440587.5)*86400
+unix_to_julian = lambda t: t/86400 + 2440587.5
 
 def base64_putint(v):
     zdigits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz~"
@@ -122,6 +123,34 @@ def remove_clearsign(blob):
     return b''.join(lines)
 
 
+class LRUCache(collections.UserDict):
+    def __init__(self, maxlen):
+        self.capacity = maxlen
+        self.data = collections.OrderedDict()
+
+    def __getitem__(self, key):
+        value = self.data.pop(key)
+        self.data[key] = value
+        return value
+
+    def get(self, key, default=None):
+        try:
+            value = self.data.pop(key)
+            self.data[key] = value
+            return value
+        except KeyError:
+            return default
+
+    def __setitem__(self, key, value):
+        if self.capacity:
+            try:
+                self.data.pop(key)
+            except KeyError:
+                if len(self.data) >= self.capacity:
+                    self.data.popitem(last=False)
+            self.data[key] = value
+
+
 class Artifact:
     def __init__(self, blob=None, rid=None, uuid=None):
         self.blob = blob
@@ -222,11 +251,12 @@ class StructuralArtifact(Artifact):
 
 class Repo:
 
-    def __init__(self, repository, check=False):
+    def __init__(self, repository, check=False, cachesize=64):
         self.repository = repository
         self.db = sqlite3.connect(repository)
         self.db.row_factory = sqlite3.Row
         self.check = check
+        self.cache = LRUCache(cachesize)
 
     def artifact(self, key, type_=None):
         '''Get an artifact by rid or uuid'''
@@ -245,12 +275,16 @@ class Repo:
             "FROM blob, delta, b "
             "WHERE delta.rid = b.rid AND blob.rid = delta.srcid"
             ") SELECT rid, uuid, content FROM b ORDER BY depth" % kwd, (val,)):
-            if blob:
-                blob = delta_apply(blob, decompress(content), self.check)
+            if rid in self.cache:
+                blob = self.cache[rid]
             else:
-                blob = decompress(content)
+                if blob:
+                    blob = delta_apply(blob, decompress(content), self.check)
+                else:
+                    blob = decompress(content)
+                self.cache[rid] = blob
         if not blob:
-            raise ValueError("can't find artifact: %s" % id_)
+            raise ValueError("can't find artifact: %s" % rid)
         if type_ == 'structural':
             return StructuralArtifact(blob, rid, uuid)
         elif type_ == 'file':
@@ -270,15 +304,23 @@ class Repo:
     def find_artifact(self, prefix):
         row = self.execute('SELECT rid, uuid FROM blob WHERE uuid LIKE ?',
               (prefix+'%',)).fetchone()
-        return row
+        return tuple(row)
 
-    def artifact_uuid(self, rid):
+    def to_uuid(self, rid):
         row = self.execute('SELECT uuid FROM blob WHERE rid = ?',
               (rid,)).fetchone()
         if row:
             return row[0]
         else:
             raise IndexError('rid %d not found' % rid)
+
+    def to_rid(self, uuid):
+        row = self.execute('SELECT rid FROM blob WHERE uuid = ?',
+              (uuid,)).fetchone()
+        if row:
+            return row[0]
+        else:
+            raise IndexError('uuid %s not found' % uuid)
 
     def execute(self, sql, parameters=None):
         return self.db.cursor().execute(sql, parameters)
