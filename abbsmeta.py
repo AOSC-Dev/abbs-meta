@@ -39,7 +39,10 @@ class Package:
         self.name = name
         self.tree = tree
         self.secpath = secpath
-        self.category, self.section = secpath.split('-', 1)
+        if any(secpath.startswith(x) for x in abbs_categories):
+            self.category, self.section = secpath.split('-', 1)
+        else:
+            self.category, self.section = None, secpath
         self.directory = directory
         self.pkg_section = None
         self.version = None
@@ -94,6 +97,8 @@ class PackageGroup(Package):
             self.category, self.section = secpath.split('-', 1)
         else:
             self.category, self.section = None, secpath
+        self.version = None
+        self.release = None
         self.directory = directory
         self.commit_time = None
         self.spec = collections.OrderedDict()
@@ -112,6 +117,8 @@ class PackageGroup(Package):
         cls = Package(self.tree, self.secpath, self.directory, self.name)
         cls.commit_time = self.commit_time
         cls.spec = self.spec.copy()
+        cls.version = self.version
+        cls.release = self.release
         cls.load_defines(defines_fp, defines_filename)
         return cls
 
@@ -430,11 +437,13 @@ class SourceRepo:
             'SELECT commit_time FROM package_versions '
             'ORDER BY commit_time DESC LIMIT 1').fetchone()
         last_update = last_update[0] if last_update else 0
-        for mtime, mid in self.fossil.execute(
-            "SELECT round((mtime-2440587.5)*86400), objid FROM event "
+        for mtime, mid, uuid in self.fossil.execute(
+            "SELECT round((mtime-2440587.5)*86400), objid, blob.uuid "
+            "FROM event "
+            "LEFT JOIN blob ON blob.rid=event.objid "
             "WHERE type='ci' AND mtime>? ORDER BY mtime",
             (fossil.unix_to_julian(last_update),)).fetchall():
-            logging.info('%s: %d', time.strftime('%Y-%m-%d', time.gmtime(mtime)), mid)
+            logging.info('%s: %d %s', time.strftime('%Y-%m-%d', time.gmtime(mtime)), mid, uuid[:16])
             self.scan_abbs_tree(mid)
         logging.info('Done.')
 
@@ -449,6 +458,7 @@ class SourceRepo:
         self.marksdb.commit()
 
     def close(self):
+        logging.info('Committing...')
         self.db.execute('PRAGMA optimize')
         self.marksdb.execute('PRAGMA optimize')
         self.db.commit()

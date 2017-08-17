@@ -154,7 +154,7 @@ def eval_bashvar_ext(source, filename=None):
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE).communicate(''.join(stdin).encode('utf-8'))
     if errs:
-        logging.warning('%s: %s', filename, errs.decode('utf-8').rstrip())
+        logging.warning('%s: %s', filename, errs.decode('utf-8', 'backslashreplace').rstrip())
     lines = [l.replace('\\n', '\n') for l in outs.decode('utf-8').splitlines()]
     if len(var) != len(lines):
         logging.error('%s: bash output not expected', filename)
