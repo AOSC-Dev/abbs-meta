@@ -135,7 +135,8 @@ def parse_commit_msg(name, text):
     return text
 
 class SourceRepo:
-    def __init__(self, name, basepath, markpath, dbfile, mainbranch, branches=None):
+    def __init__(self, name, basepath, markpath, dbfile, mainbranch, branches=None,
+                 category='base', url=None, priority=0):
         # tree name
         self.name = name
         self.basepath = basepath
@@ -144,8 +145,18 @@ class SourceRepo:
         self.db = sqlite3.connect(dbfile)
         self.branches = branches
         self.mainbranch = mainbranch
-        assert mainbranch in branches
-        self.gitpath = os.path.join(basepath, name)
+        if branches and mainbranch not in branches:
+            raise ValueError("mainbranch '%s' not in branches" % mainbranch)
+        self.category = category
+        self.url = url
+        self.priority = priority
+        self.gitpath = os.path.join(basepath, name + '.git')
+        if not os.path.isdir(self.gitpath):
+            gitpathwork = os.path.join(basepath, name)
+            if os.path.isdir(gitpathwork):
+                self.gitpath = gitpathwork
+            else:
+                raise NotADirectoryError("can't find git working tree or base repo at %s(.git)" % gitpathwork)
         self.fossilpath = os.path.join(basepath, name + '.fossil')
         # db for syncing among Fossil, Git and Abbs-meta database
         self.marksdbfile = os.path.join(markpath, name + '-marks.db')
@@ -182,7 +193,7 @@ class SourceRepo:
                     'category TEXT,' # base, bsp
                     'url TEXT,' # github
                     'priority INTEGER,'
-                    'default_branch TEXT'
+                    'mainbranch TEXT'
                     ')')
         cur.execute('CREATE TABLE IF NOT EXISTS packages ('
                     'name TEXT PRIMARY KEY,'  # coreutils
@@ -226,6 +237,8 @@ class SourceRepo:
                     ' ON package_spec (package)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_package_dependencies'
                     ' ON package_dependencies (package)')
+        cur.execute('REPLACE INTO trees VALUES (?,?,?,?,?)', (self.name,
+                    self.category, self.url, self.priority, self.mainbranch))
         mcur = self.marksdb.cursor()
         mcur.execute('PRAGMA journal_mode=WAL')
         mcur.execute('CREATE TABLE IF NOT EXISTS package_rel ('
@@ -433,16 +446,20 @@ class SourceRepo:
 
     def repo_update(self):
         cur = self.db.cursor()
+        mcur = self.marksdb.cursor()
         last_update = cur.execute(
             'SELECT commit_time FROM package_versions '
             'ORDER BY commit_time DESC LIMIT 1').fetchone()
         last_update = last_update[0] if last_update else 0
+        last_rid = mcur.execute(
+            'SELECT rid FROM package_rel ORDER BY rid DESC LIMIT 1').fetchone()
+        last_rid = last_rid[0] if last_rid else 0
         for mtime, mid, uuid in self.fossil.execute(
             "SELECT round((mtime-2440587.5)*86400), objid, blob.uuid "
             "FROM event "
             "LEFT JOIN blob ON blob.rid=event.objid "
-            "WHERE type='ci' AND mtime>? ORDER BY mtime",
-            (fossil.unix_to_julian(last_update),)).fetchall():
+            "WHERE (mtime>=? OR objid>?) AND type='ci' ORDER BY mtime",
+            (fossil.unix_to_julian(last_update), last_rid)).fetchall():
             logging.info('%s: %d %s', time.strftime('%Y-%m-%d', time.gmtime(mtime)), mid, uuid[:16])
             self.scan_abbs_tree(mid)
         logging.info('Done.')
@@ -471,6 +488,9 @@ def main():
     parser.add_argument("-d", "--dbfile", help="Abbs meta database file", default="abbs.db", metavar='FILE')
     parser.add_argument("-B", "--mainbranch", help="Git repo main branch name", default="master", metavar='BRANCH')
     parser.add_argument("-b", "--branches", help="Branches to consider, seperated by comma (,)", default="staging,master,bugfix", metavar='BRANCH')
+    parser.add_argument("-c", "--category", help="Category, 'base' or 'bsp'", default="base")
+    parser.add_argument("-u", "--url", help="Repo url")
+    parser.add_argument("-P", "--priority", help="Priority to consider")
     parser.add_argument("--no-sync", help="Don't sync Git and Fossil repos", action='store_true')
     parser.add_argument("--reset", help="Reset sync status", action='store_true')
     parser.add_argument("name", help="Repository / abbs tree name")
