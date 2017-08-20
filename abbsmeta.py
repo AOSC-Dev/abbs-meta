@@ -138,6 +138,8 @@ class SourceRepo:
     def __init__(self, name, basepath, markpath, dbfile, mainbranch, branches=None,
                  category='base', url=None, priority=0):
         # tree name
+        if '/' in name:
+            raise ValueError("'/' not allowed in name. Use basepath to change directory")
         self.name = name
         self.basepath = basepath
         self.markpath = markpath
