@@ -490,13 +490,16 @@ def main():
     parser.add_argument("-b", "--branches", help="Branches to consider, seperated by comma (,)", default="staging,master,bugfix", metavar='BRANCH')
     parser.add_argument("-c", "--category", help="Category, 'base' or 'bsp'", default="base")
     parser.add_argument("-u", "--url", help="Repo url")
-    parser.add_argument("-P", "--priority", help="Priority to consider")
+    parser.add_argument("-P", "--priority", help="Priority to consider", type=int, default=0)
     parser.add_argument("--no-sync", help="Don't sync Git and Fossil repos", action='store_true')
     parser.add_argument("--reset", help="Reset sync status", action='store_true')
     parser.add_argument("name", help="Repository / abbs tree name")
     args = parser.parse_args()
 
-    repo = SourceRepo(args.name, args.basepath, args.markpath, args.dbfile, args.mainbranch, args.branches.split(','))
+    repo = SourceRepo(
+        args.name, args.basepath, args.markpath, args.dbfile,
+        args.mainbranch, args.branches.split(','),
+        args.category, args.url, args.priority)
     repo.update(not args.no_sync, args.reset)
 
 if __name__ == '__main__':
