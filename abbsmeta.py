@@ -174,6 +174,7 @@ class SourceRepo:
 
     def update(self, sync=True, reset=False):
         self.init_db()
+        logging.info('Update ' + self.name)
         if sync:
             logging.info('Syncing...')
             self.sync()
@@ -206,6 +207,14 @@ class SourceRepo:
                     'directory TEXT,' # second-level dir in aosc-os-abbs
                     'description TEXT'
                     ')')
+        cur.execute('CREATE TABLE IF NOT EXISTS package_duplicate ('
+                    'package TEXT,'  # coreutils
+                    'tree TEXT,'     # abbs tree name
+                    'category TEXT,' # base
+                    'section TEXT,'  # utils
+                    'directory TEXT,' # second-level dir in aosc-os-abbs
+                    'UNIQUE (package, tree, category, section, directory)'
+                    ')')
         cur.execute('CREATE TABLE IF NOT EXISTS package_versions ('
                     'package TEXT,'  # coreutils
                     'branch TEXT,'   # abbs tree branch
@@ -233,6 +242,8 @@ class SourceRepo:
                     # we may have unmatched dependency package name
                     # 'FOREIGN KEY(dependency) REFERENCES packages(name)'
                     ')')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_package_duplicate'
+                    ' ON package_duplicate (package)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_package_versions'
                     ' ON package_versions (package, branch)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_package_spec'
@@ -376,6 +387,14 @@ class SourceRepo:
                 existing[0], existing[1], existing[2], existing[3],
                 self.name, pkg.category, pkg.section, pkg.directory
             )
+            cur.execute(
+                'INSERT OR IGNORE INTO package_duplicate VALUES (?,?,?,?,?)',
+                (pkg.name, self.name, pkg.category or '', pkg.section, pkg.directory)
+            )
+            cur.execute(
+                'INSERT OR IGNORE INTO package_duplicate VALUES (?,?,?,?,?)',
+                (pkg.name, existing[0], existing[1] or '', existing[2], existing[3])
+            )
             # trees with lower priority will not override
             return
         elif ((pkg.category, pkg.section, pkg.directory) !=
@@ -384,6 +403,14 @@ class SourceRepo:
                 'duplicate package "%s" found in %s-%s/%s and %s-%s/%s',
                 pkg.name, existing[1], existing[2], existing[3],
                 pkg.category, pkg.section, pkg.directory
+            )
+            cur.execute(
+                'INSERT OR IGNORE INTO package_duplicate VALUES (?,?,?,?,?)',
+                (pkg.name, self.name, pkg.category or '', pkg.section, pkg.directory)
+            )
+            cur.execute(
+                'INSERT OR IGNORE INTO package_duplicate VALUES (?,?,?,?,?)',
+                (pkg.name, existing[0], existing[1] or '', existing[2], existing[3])
             )
         cur.execute(
             'REPLACE INTO packages VALUES (?,?,?,?,?,?,?)',
@@ -417,9 +444,9 @@ class SourceRepo:
             if change == '-':
                 for row in cur.execute(
                     'SELECT name FROM packages p '
-                    'WHERE category=? AND section=? AND directory=?',
-                    (pkggroup.category, pkggroup.section, pkggroup.directory)
-                    ).fetchall():
+                    'WHERE category=? AND section=? AND directory=? AND tree=?',
+                    (pkggroup.category, pkggroup.section, pkggroup.directory,
+                    self.name)).fetchall():
                     name = row[0]
                     for branch in self.branches_of_commit(mid):
                         cur.execute('DELETE FROM package_versions WHERE '
@@ -427,12 +454,23 @@ class SourceRepo:
                     if not cur.execute(
                         'SELECT 1 FROM package_versions WHERE package=?',
                         (name,)).fetchone():
+                        cur.execute('DELETE FROM package_duplicate '
+                                    'WHERE package=? AND tree=? AND category=? '
+                                    ' AND section=? AND directory=?',
+                                    (name, self.name, pkggroup.category or '',
+                                    pkggroup.section, pkggroup.directory))
                         cur.execute('DELETE FROM package_spec WHERE package=?',
                                     (name,))
                         cur.execute('DELETE FROM package_dependencies WHERE package=?',
                                     (name,))
                         cur.execute('DELETE FROM packages WHERE name=?', (name,))
                         logging.info('removed: ' + name)
+                cur.execute(
+                    'DELETE FROM package_duplicate '
+                    'WHERE category=? AND section=? AND directory=? AND tree=?',
+                    (pkggroup.category or '', pkggroup.section,
+                     pkggroup.directory, self.name)
+                )
             elif change == '+':
                 for pkg in self.read_package_info(mid, pkggroup):
                     self.update_package(mid, pkg)
@@ -445,13 +483,33 @@ class SourceRepo:
                         'REPLACE INTO package_rel VALUES (?,?,?,?,?,?)',
                         (mid, pkg.name, pkg.version, pkg.release, pkg.epoch, cmsg)
                     )
+        # make up for the deleted duplicate
+        for secpath, directory in cur.execute(
+            "SELECT "
+            " CASE WHEN category='' THEN section "
+            " ELSE category || '-' || section END, directory "
+            "FROM package_duplicate "
+            "WHERE package NOT IN (SELECT name FROM packages) AND tree=?",
+            (self.name,)).fetchall():
+            if not self.exists(mid, os.path.join(secpath, directory, 'spec'), True):
+                continue
+            pkggroup = PackageGroup(self.name, secpath, directory)
+            for pkg in self.read_package_info(mid, pkggroup):
+                self.update_package(mid, pkg)
+        cur.execute(
+            'DELETE FROM package_duplicate WHERE package IN '
+            '(SELECT package FROM package_duplicate '
+            ' GROUP BY package HAVING count(package) = 1)'
+        )
 
     def repo_update(self):
         cur = self.db.cursor()
         mcur = self.marksdb.cursor()
         last_update = cur.execute(
-            'SELECT commit_time FROM package_versions '
-            'ORDER BY commit_time DESC LIMIT 1').fetchone()
+            'SELECT pv.commit_time FROM packages p '
+            'INNER JOIN package_versions pv ON pv.package=p.name '
+            'WHERE p.tree=? '
+            'ORDER BY pv.commit_time DESC LIMIT 1', (self.name,)).fetchone()
         last_update = last_update[0] if last_update else 0
         last_rid = mcur.execute(
             'SELECT rid FROM package_rel ORDER BY rid DESC LIMIT 1').fetchone()
@@ -460,15 +518,19 @@ class SourceRepo:
             "SELECT round((mtime-2440587.5)*86400), objid, blob.uuid "
             "FROM event "
             "LEFT JOIN blob ON blob.rid=event.objid "
-            "WHERE (mtime>=? OR objid>?) AND type='ci' ORDER BY mtime",
+            "WHERE (mtime>=? OR objid>?) AND type='ci' ORDER BY mtime, objid",
             (fossil.unix_to_julian(last_update), last_rid)).fetchall():
+            if not self.branches_of_commit(mid):
+                continue
             logging.info('%s: %d %s', time.strftime('%Y-%m-%d', time.gmtime(mtime)), mid, uuid[:16])
             self.scan_abbs_tree(mid)
         logging.info('Done.')
 
     def reset_progress(self):
         cur = self.db.cursor()
-        cur.execute('DELETE FROM package_versions')
+        cur.execute('DELETE FROM package_versions WHERE package IN '
+                    '(SELECT name FROM packages WHERE tree=?)', (self.name,))
+        cur.execute('DELETE FROM package_duplicate WHERE tree=?', (self.name,))
         cur.execute('VACUUM')
         mcur = self.marksdb.cursor()
         mcur.execute('DELETE FROM package_rel')
@@ -488,8 +550,8 @@ def main():
     parser.add_argument("-p", "--basepath", help="Directory with both Git and Fossil repositories", default=".", metavar='PATH')
     parser.add_argument("-m", "--markpath", help="Directory with Git and Fossil sync marks", default=".", metavar='PATH')
     parser.add_argument("-d", "--dbfile", help="Abbs meta database file", default="abbs.db", metavar='FILE')
+    parser.add_argument("-b", "--branches", help="Branches to consider, seperated by comma (,)", default="staging,master,bugfix")
     parser.add_argument("-B", "--mainbranch", help="Git repo main branch name", default="master", metavar='BRANCH')
-    parser.add_argument("-b", "--branches", help="Branches to consider, seperated by comma (,)", default="staging,master,bugfix", metavar='BRANCH')
     parser.add_argument("-c", "--category", help="Category, 'base' or 'bsp'", default="base")
     parser.add_argument("-u", "--url", help="Repo url")
     parser.add_argument("-P", "--priority", help="Priority to consider", type=int, default=0)
