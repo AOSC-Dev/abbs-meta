@@ -167,7 +167,7 @@ class SourceRepo:
         if not os.path.isfile(self.fossilpath):
             self.sync()
         self.fossil = fossil.Repo(self.fossilpath)
-        self._cache_flist = fossil.LRUCache(64)
+        self._cache_flist = fossil.LRUCache(16)
 
     def __repr__(self):
         return "<SourceRepo %s, basepath=%s>" % (self.name, self.basepath)
@@ -242,6 +242,19 @@ class SourceRepo:
                     # we may have unmatched dependency package name
                     # 'FOREIGN KEY(dependency) REFERENCES packages(name)'
                     ')')
+        cur.execute("DROP VIEW IF EXISTS v_packages")
+        cur.execute("CREATE VIEW IF NOT EXISTS v_packages AS "
+                    "SELECT p.name name, p.tree tree, p.category category, "
+                    "  section, pkg_section, directory, description, "
+                    "  ((CASE WHEN ifnull(epoch, '') = '' THEN '' "
+                    "    ELSE epoch || ':' END) || version || "
+                    "   (CASE WHEN ifnull(release, '') = '' THEN '' "
+                    "    ELSE '-' || release END)) full_version, "
+                    "  pv.commit_time commit_time "
+                    "FROM packages p "
+                    "LEFT JOIN trees t ON t.name=p.tree "
+                    "LEFT JOIN package_versions pv "
+                    "  ON pv.package=p.name AND pv.branch=t.mainbranch")
         cur.execute('CREATE INDEX IF NOT EXISTS idx_package_duplicate'
                     ' ON package_duplicate (package)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_package_versions'
@@ -441,37 +454,37 @@ class SourceRepo:
         if exist:
             return
         for pkggroup, change in self.list_update(mid):
-            if change == '-':
-                for row in cur.execute(
-                    'SELECT name FROM packages p '
-                    'WHERE category=? AND section=? AND directory=? AND tree=?',
-                    (pkggroup.category, pkggroup.section, pkggroup.directory,
-                    self.name)).fetchall():
-                    name = row[0]
-                    for branch in self.branches_of_commit(mid):
-                        cur.execute('DELETE FROM package_versions WHERE '
-                                    'package=? AND branch=?', (name, branch))
-                    if not cur.execute(
-                        'SELECT 1 FROM package_versions WHERE package=?',
-                        (name,)).fetchone():
-                        cur.execute('DELETE FROM package_duplicate '
-                                    'WHERE package=? AND tree=? AND category=? '
-                                    ' AND section=? AND directory=?',
-                                    (name, self.name, pkggroup.category or '',
-                                    pkggroup.section, pkggroup.directory))
-                        cur.execute('DELETE FROM package_spec WHERE package=?',
-                                    (name,))
-                        cur.execute('DELETE FROM package_dependencies WHERE package=?',
-                                    (name,))
-                        cur.execute('DELETE FROM packages WHERE name=?', (name,))
+            for row in cur.execute(
+                'SELECT name FROM packages p '
+                'WHERE category=? AND section=? AND directory=? AND tree=?',
+                (pkggroup.category, pkggroup.section, pkggroup.directory,
+                self.name)).fetchall():
+                name = row[0]
+                for branch in self.branches_of_commit(mid):
+                    cur.execute('DELETE FROM package_versions WHERE '
+                                'package=? AND branch=?', (name, branch))
+                if not cur.execute(
+                    'SELECT 1 FROM package_versions WHERE package=?',
+                    (name,)).fetchone():
+                    cur.execute('DELETE FROM package_duplicate '
+                                'WHERE package=? AND tree=? AND category=? '
+                                ' AND section=? AND directory=?',
+                                (name, self.name, pkggroup.category or '',
+                                pkggroup.section, pkggroup.directory))
+                    cur.execute('DELETE FROM package_spec WHERE package=?',
+                                (name,))
+                    cur.execute('DELETE FROM package_dependencies WHERE package=?',
+                                (name,))
+                    cur.execute('DELETE FROM packages WHERE name=?', (name,))
+                    if change == '-':
                         logging.info('removed: ' + name)
-                cur.execute(
-                    'DELETE FROM package_duplicate '
-                    'WHERE category=? AND section=? AND directory=? AND tree=?',
-                    (pkggroup.category or '', pkggroup.section,
-                     pkggroup.directory, self.name)
-                )
-            elif change == '+':
+            cur.execute(
+                'DELETE FROM package_duplicate '
+                'WHERE category=? AND section=? AND directory=? AND tree=?',
+                (pkggroup.category or '', pkggroup.section,
+                 pkggroup.directory, self.name)
+            )
+            if change == '+':
                 for pkg in self.read_package_info(mid, pkggroup):
                     self.update_package(mid, pkg)
                     cmsg = self.fossil.execute(

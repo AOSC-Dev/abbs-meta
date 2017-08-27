@@ -16,7 +16,9 @@ FOSSIL = os.environ.get('FOSSIL', 'fossil')
 def touch(filename):
     open(filename, 'a').close()
 
-def store_marks(cur, gitmarks, fossilmarks):
+def store_marks(db, gitmarks, fossilmarks):
+    cur = db.cursor()
+    cur.execute('PRAGMA journal_mode=WAL')
     cur.execute('CREATE TABLE IF NOT EXISTS marks ('
         'name TEXT UNIQUE, rid INT, uuid TEXT, githash TEXT'
     ')')
@@ -34,8 +36,10 @@ def store_marks(cur, gitmarks, fossilmarks):
             cur.execute(
                 'UPDATE marks SET githash=? WHERE name=?', (toks[1], toks[0])
             )
+    db.commit()
 
-def store_committers(cur, committers):
+def store_committers(db, committers):
+    cur = db.cursor()
     cur.execute('CREATE TABLE IF NOT EXISTS committers ('
         'email TEXT PRIMARY KEY, name TEXT'
     ')')
@@ -44,8 +48,10 @@ def store_committers(cur, committers):
             'REPLACE INTO committers VALUES (?,?)',
             (k, v.most_common(1)[0][0])
         )
+    db.commit()
 
-def store_branches(cur, fossilpath):
+def store_branches(db, fossilpath):
+    cur = db.cursor()
     sql = (
         # find branch ancestors and tag them with all child branches
         "WITH RECURSIVE t(rid, tagid) AS ("
@@ -73,6 +79,7 @@ def store_branches(cur, fossilpath):
         'PRIMARY KEY (rid, tagid)'
     ')')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_branches ON branches (rid)')
+    db.commit()
     cur.execute('ATTACH DATABASE ? AS fossil', (fossilpath,))
     cur.execute(sql)
 
@@ -108,17 +115,14 @@ def sync(gitpath, fossilpath, markpath):
     git.wait()
     fossil.wait()
     marksdb = sqlite3.connect(os.path.join(markpath, fossilname + '-marks.db'))
+    store_marks(marksdb, gitmarks, fossilmarks)
+    store_committers(marksdb, committers)
+    store_branches(marksdb, fossilpath)
     cur = marksdb.cursor()
-    try:
-        cur.execute('PRAGMA journal_mode=WAL')
-        store_marks(cur, gitmarks, fossilmarks)
-        store_committers(cur, committers)
-        store_branches(cur, fossilpath)
-        cur.execute('PRAGMA optimize')
-        if newfossil:
-            cur.execute('VACUUM')
-    finally:
-        marksdb.commit()
+    cur.execute('PRAGMA optimize')
+    if newfossil:
+        cur.execute('VACUUM')
+    marksdb.commit()
 
 if __name__ == '__main__':
     sync(*sys.argv[1:])
