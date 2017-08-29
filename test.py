@@ -113,6 +113,7 @@ VER=4.89
 SRCTBL="http://www.mirrorservice.org/sites/ftp.exim.org/pub/exim/exim${VER:0:1}/exim-$VER.tar.gz"
 SRCTBL2=http://quassel-irc.org/pub/quassel-${VER}.tar.bz2
 SRCTBL3=http://quassel-irc.org/pub/quassel-$VER.tar.bz2
+SRCTBL4=http://quassel-irc.org/pub/quassel-${VER//./_}.tar.bz2
 
 a=4
 a+=5
@@ -139,6 +140,27 @@ s7=${string: -7:2}
 # bc
 s8=${string: -7:-2}
 # bcdef
+
+string=abcd/efg/eijk
+s9=${string/}
+# abcd/efg/eijk
+s10=${string//}
+# abcd/efg/eijk
+s12=${string/e}
+# abcd/fg/eijk
+s13=${string/e/z}
+# abcd/zfg/eijk
+s14=${string//e/z}
+# abcd/zfg/zijk
+string='a
+b
+c'
+s15="${string/
+/d
+e}"
+# ad
+# eb
+# c
 '''
         expected = collections.OrderedDict((
             ('PKGDES', 'SDL and OpenGL bindings for Erlang'),
@@ -156,12 +178,15 @@ s8=${string: -7:-2}
             ('SRCTBL', 'http://www.mirrorservice.org/sites/ftp.exim.org/pub/exim/exim4/exim-4.89.tar.gz'),
             ('SRCTBL2', 'http://quassel-irc.org/pub/quassel-4.89.tar.bz2'),
             ('SRCTBL3', 'http://quassel-irc.org/pub/quassel-4.89.tar.bz2'),
+            ('SRCTBL4', 'http://quassel-irc.org/pub/quassel-4_89.tar.bz2'),
             ('a', '45devel'), ('b', ''), ('c', ''), ('d', ''), ('e', 'a\\\nb'),
-            ('string', '01234567890abcdefgh'),
+            ('string', 'a\nb\nc'),
             ('s1', '7890abcdefgh'), ('s2', ''), ('s3', '78'),
             ('s4', '7890abcdef'), ('s5', 'bcdefgh'), ('s6', ''),
-            ('s7', 'bc'), ('s8', 'bcdef'))
-        )
+            ('s7', 'bc'), ('s8', 'bcdef'), ('s9', 'abcd/efg/eijk'),
+            ('s10', 'abcd/efg/eijk'), ('s12', 'abcd/fg/eijk'),
+            ('s13', 'abcd/zfg/eijk'), ('s14', 'abcd/zfg/zijk'), ('s15', 'ad\neb\nc')
+        ))
         result = bashvar.eval_bashvar_literal(source)
         self.assertEqual(result, expected)
 
@@ -188,7 +213,6 @@ s8=${string: -7:-2}
             'a=${parameter##word}',
             'a=${parameter%word}',
             'a=${parameter%%word}',
-            'a=${parameter/pattern/string}',
             'a=${parameter^pattern}',
             'a=${parameter^^pattern}',
             'a=${parameter,pattern}',
@@ -201,11 +225,24 @@ s8=${string: -7:-2}
             'a=>(list)',
             'a=[abc].txt',
             'a=1?2.txt',
+            # pattern is /
+            'a=${string///}',
+            'a=${string////}',
+            'a=${string/\///}',
+            'a=${string/`}',
+            'a=${string/\/e/z}',
+            'a=${string/e//z}',
+            'a=${string/e/z/}',
+            'a=${string/#e/z}',
+            'a=${string/%e/z}',
+            'a=${string/%e/z}',
+            'a=${@/e/z}',
+            'a=${*/e/z}',
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             for source in sources:
-                with self.assertRaises(bashvar.ParseException):
+                with self.assertRaises(bashvar.ParseException, msg=source):
                     bashvar.eval_bashvar_literal(source)
 
     def test_warn(self):

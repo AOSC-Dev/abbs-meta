@@ -17,6 +17,8 @@ comment = ('#' + pp.CharsNotIn('\n')).setName("comment")
 integer = (pp.Word(pp.nums) | pp.Combine('-' + pp.Word(pp.nums)))
 
 varname = pp.Word(pp.alphas + '_', pp.alphanums + '_').setResultsName("varname")
+# ${parameter/pattern/string}
+substsafe = pp.CharsNotIn('/#%*?[}\'"`\\')
 
 expansion_param = pp.Group(
     pp.Literal('$').setResultsName("expansion") +
@@ -25,11 +27,16 @@ expansion_param = pp.Group(
         pp.Literal('{').suppress() +
         varname +
         pp.Optional(
-            (pp.Literal(':') + (
+            (pp.Literal(':').setResultsName("exptype") + (
                 pp.Word(pp.nums) |
                 (whitespace + pp.Combine('-' + pp.Word(pp.nums)))
-            ).setResultsName("offset") +
-            pp.Optional(pp.Literal(':') + integer.setResultsName("length")))
+                ).setResultsName("offset") +
+                pp.Optional(pp.Literal(':') + integer.setResultsName("length")))
+            ^ ((pp.Literal('//') ^ pp.Literal('/')).setResultsName("exptype") +
+                pp.Optional(substsafe.setResultsName("pattern") +
+                pp.Optional(pp.Literal('/') +
+                pp.Optional(substsafe, '').setResultsName("string")))
+            )
         ) +
         pp.Literal('}').suppress()
     ) | varname)
@@ -90,16 +97,28 @@ def combine_value(tokens, variables):
         varname = tokens['varname']
         if varname in variables:
             var = variables[varname]
-            if 'offset' in tokens:
-                offset = int(tokens['offset'].strip())
-                if 'length' in tokens:
-                    length = int(tokens['length'])
-                    if length >= 0:
-                        var = var[offset:offset+length]
+            exptype = tokens.get('exptype')
+            if exptype is None:
+                pass
+            elif exptype == ':':
+                if 'offset' in tokens:
+                    offset = int(tokens['offset'].strip())
+                    if 'length' in tokens:
+                        length = int(tokens['length'])
+                        if length >= 0:
+                            var = var[offset:offset+length]
+                        else:
+                            var = var[offset:length]
                     else:
-                        var = var[offset:length]
+                        var = var[offset:]
+            elif exptype in '//':
+                pattern = tokens.get('pattern', '')
+                newstring = tokens.get('string', '')
+                if exptype == '/':
+                    var = var.replace(pattern, newstring, 1)
                 else:
-                    var = var[offset:]
+                    var = var.replace(pattern, newstring)
+                print('%s %r, %r' % (exptype, pattern, newstring))
             val += var
         else:
             warnings.warn('variable "%s" is undefined' % varname, VariableWarning)
