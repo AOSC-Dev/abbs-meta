@@ -250,7 +250,7 @@ class SourceRepo:
                     "    ELSE epoch || ':' END) || version || "
                     "   (CASE WHEN ifnull(release, '') = '' THEN '' "
                     "    ELSE '-' || release END)) full_version, "
-                    "  pv.commit_time commit_time "
+                    "  pv.commit_time commit_time, t.category tree_category "
                     "FROM packages p "
                     "LEFT JOIN trees t ON t.name=p.tree "
                     "LEFT JOIN package_versions pv "
@@ -358,19 +358,22 @@ class SourceRepo:
             if not len(pathspl) > 2:
                 continue
             path, pkgpath = pathspl[:2]
-            if path in repo_ignore:
+            changestatus = change.status
+            if path in repo_ignore or (path, pkgpath) in pkgs:
                 continue
-            elif (path, pkgpath) not in pkgs:
-                if (change.status == '+' and not self.exists(
-                    mid, os.path.join(path, pkgpath, 'spec'), ignorelink=True)):
-                    continue
-                yield PackageGroup(self.name, path, pkgpath), change.status
-                pkgs.add((path, pkgpath))
+            elif (change.status == '+' and not self.exists(
+                mid, os.path.join(path, pkgpath, 'spec'), ignorelink=True)):
+                continue
+            elif (change.status == '-' and self.exists(
+                mid, os.path.join(path, pkgpath, 'spec'), ignorelink=True)):
+                changestatus = '+'
+            yield PackageGroup(self.name, path, pkgpath), changestatus
+            pkgs.add((path, pkgpath))
 
     def read_package_info(self, mid, pkggroup):
         results = []
         repopath = os.path.join(pkggroup.secpath, pkggroup.directory)
-        logging.debug(pkggroup)
+        logging.debug('read %r', pkggroup)
         filelist = self.file_list(mid)
         uuid, specstr = self.getfile(mid, os.path.join(repopath, 'spec'), True)
         pkggroup.load_spec(specstr, uuid[:16])
@@ -445,6 +448,7 @@ class SourceRepo:
                             (pkg.name,))
                 cur.executemany('REPLACE INTO package_dependencies VALUES (?,?,?,?)',
                                 pkg.dependencies)
+        logging.debug('add: ' + pkg.name)
 
     def scan_abbs_tree(self, mid):
         cur = self.db.cursor()
@@ -456,7 +460,7 @@ class SourceRepo:
         for pkggroup, change in self.list_update(mid):
             for row in cur.execute(
                 'SELECT name FROM packages p '
-                'WHERE category=? AND section=? AND directory=? AND tree=?',
+                'WHERE category IS ? AND section=? AND directory=? AND tree=?',
                 (pkggroup.category, pkggroup.section, pkggroup.directory,
                 self.name)).fetchall():
                 name = row[0]
@@ -478,6 +482,8 @@ class SourceRepo:
                     cur.execute('DELETE FROM packages WHERE name=?', (name,))
                     if change == '-':
                         logging.info('removed: ' + name)
+                    else:
+                        logging.debug('rm+: ' + name)
             cur.execute(
                 'DELETE FROM package_duplicate '
                 'WHERE category=? AND section=? AND directory=? AND tree=?',
@@ -568,10 +574,14 @@ def main():
     parser.add_argument("-c", "--category", help="Category, 'base' or 'bsp'", default="base")
     parser.add_argument("-u", "--url", help="Repo url")
     parser.add_argument("-P", "--priority", help="Priority to consider", type=int, default=0)
+    parser.add_argument("-v", "--verbose", help="Show debug logs", action='store_true')
     parser.add_argument("--no-sync", help="Don't sync Git and Fossil repos", action='store_true')
     parser.add_argument("--reset", help="Reset sync status", action='store_true')
     parser.add_argument("name", help="Repository / abbs tree name")
     args = parser.parse_args()
+
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
 
     repo = SourceRepo(
         args.name, args.basepath, args.markpath, args.dbfile,
