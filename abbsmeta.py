@@ -244,7 +244,9 @@ class SourceRepo:
                     ')')
         cur.execute("DROP VIEW IF EXISTS v_packages")
         cur.execute("CREATE VIEW IF NOT EXISTS v_packages AS "
-                    "SELECT p.name name, p.tree tree, p.category category, "
+                    "SELECT p.name name, p.tree tree, "
+                    "  t.category tree_category, "
+                    "  pv.branch branch, p.category category, "
                     "  section, pkg_section, directory, description, "
                     "  ((CASE WHEN ifnull(epoch, '') = '' THEN '' "
                     "    ELSE epoch || ':' END) || version || "
