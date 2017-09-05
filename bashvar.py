@@ -118,7 +118,6 @@ def combine_value(tokens, variables):
                     var = var.replace(pattern, newstring, 1)
                 else:
                     var = var.replace(pattern, newstring)
-                print('%s %r, %r' % (exptype, pattern, newstring))
             val += var
         else:
             warnings.warn('variable "%s" is undefined' % varname, VariableWarning)
