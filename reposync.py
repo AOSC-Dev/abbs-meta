@@ -108,7 +108,7 @@ def sync(gitpath, fossilpath, markpath):
     for line in git.stdout:
         match = re_committer.match(line)
         if match:
-            committers[match.group(2)][match.group(1)] += 1
+            committers[match.group(2).decode('utf-8')][match.group(1).decode('utf-8')] += 1
         fossil.stdin.write(line)
     fossil.stdin.close()
     git.stdout.close()
