@@ -270,11 +270,13 @@ class SourceRepo:
         mcur = self.marksdb.cursor()
         mcur.execute('PRAGMA journal_mode=WAL')
         mcur.execute('CREATE TABLE IF NOT EXISTS package_rel ('
-                    'rid INTEGER, package TEXT, '
-                    'version TEXT, release TEXT, epoch TEXT, '
-                    'message TEXT, '
-                    'PRIMARY KEY (rid, package)'
-                    ')')
+                     'rid INTEGER, package TEXT, '
+                     'version TEXT, release TEXT, epoch TEXT, '
+                     'message TEXT, '
+                     'PRIMARY KEY (rid, package)'
+                     ')')
+        mcur.execute('CREATE INDEX IF NOT EXISTS idx_package_rel'
+                     ' ON package_rel (package)')
         self.db.commit()
         self.marksdb.commit()
 

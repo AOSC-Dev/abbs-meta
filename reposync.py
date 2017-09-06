@@ -22,7 +22,7 @@ def store_marks(db, gitmarks, fossilmarks):
     cur.execute('CREATE TABLE IF NOT EXISTS marks ('
         'name TEXT UNIQUE, rid INT, uuid TEXT, githash TEXT'
     ')')
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_marks ON marks (rid, githash)')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_marks ON marks (rid)')
     with open(fossilmarks, 'r') as f:
         for ln in f:
             toks = ln.rstrip().split(' ')
