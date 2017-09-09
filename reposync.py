@@ -92,6 +92,7 @@ def sync(gitpath, fossilpath, markpath):
         newfossil = True
         subprocess.Popen((FOSSIL, 'new', '--sha1', fossilpath)).wait()
         subprocess.Popen((FOSSIL, 'rebuild', '--wal', fossilpath)).wait()
+        subprocess.Popen((FOSSIL, 'sqlite3', '-R', fossilpath, "INSERT OR REPLACE INTO config VALUES ('project-name', '%s', now());" % fossilname)).wait()
     gitmarks = os.path.abspath(os.path.join(markpath, gitname + '.git-marks'))
     fossilmarks = os.path.abspath(os.path.join(markpath, fossilname + '.fossil-marks'))
     touch(gitmarks)
