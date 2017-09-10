@@ -265,6 +265,8 @@ class SourceRepo:
                     ' ON package_spec (package)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_package_dependencies'
                     ' ON package_dependencies (package)')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_package_dependencies_rev'
+                    ' ON package_dependencies (dependency)')
         cur.execute('REPLACE INTO trees VALUES (?,?,?,?,?)', (self.name,
                     self.category, self.url, self.priority, self.mainbranch))
         mcur = self.marksdb.cursor()
