@@ -11,7 +11,7 @@ import configparser
 
 import requests
 
-API_ENDPOINT = 'https://release-monitoring.org/api/'
+API_ENDPOINT = os.environ.get('API_ENDPOINT', 'https://release-monitoring.org/api/')
 
 re_projectrep = re.compile(r'^[^/]+/|[. _-]')
 
@@ -53,7 +53,9 @@ def check_update(cur):
         ))
 
 def detect_links(cur):
-    projects = cur.execute('SELECT id, name FROM anitya_projects GROUP BY name').fetchall()
+    projects = cur.execute(
+        'SELECT min(id) id, name FROM anitya_projects'
+        ' GROUP BY name ORDER BY id').fetchall()
     project_index = {}
     for row in projects:
         name_index = re_projectrep.sub('', row[1].lower())
