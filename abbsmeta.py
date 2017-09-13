@@ -247,7 +247,7 @@ class SourceRepo:
                     "SELECT p.name name, p.tree tree, "
                     "  t.category tree_category, "
                     "  pv.branch branch, p.category category, "
-                    "  section, pkg_section, directory, description, "
+                    "  section, pkg_section, directory, description, version, "
                     "  ((CASE WHEN ifnull(epoch, '') = '' THEN '' "
                     "    ELSE epoch || ':' END) || version || "
                     "   (CASE WHEN ifnull(release, '') = '' THEN '' "
