@@ -59,7 +59,7 @@ def detect_links(cur):
         name_index = re_projectrep.sub('', row[1].lower())
         if name_index not in project_index:
             project_index[name_index] = row
-    links = collections.OrderedDict()
+    links = {}
     for row in cur.execute('SELECT name FROM packages ORDER BY name'):
         name = row[0]
         name_index = name.lower().replace('-', '').replace(' ', '').replace('_', '')
@@ -72,8 +72,8 @@ def load_config(cur, filename, extra_links=None):
     if os.path.isfile(filename):
         config.read(filename, 'utf-8')
     else:
-        config['anitya_links'] = collections.OrderedDict()
-    links = collections.OrderedDict()
+        config['anitya_links'] = {}
+    links = {}
     for k, v in config['anitya_links'].items():
         values = v.split(' ', 1)
         if len(values) == 1:
@@ -85,6 +85,8 @@ def load_config(cur, filename, extra_links=None):
             if k not in links:
                 links[k] = v
                 config['anitya_links'][k] = '%d %s' % (v[0], v[1])
+        config['anitya_links'] = collections.OrderedDict(
+            sorted(config['anitya_links'].items()))
         with open(filename, 'w', encoding='utf-8') as f:
             config.write(f)
     for k, v in links.items():
