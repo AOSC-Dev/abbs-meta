@@ -90,7 +90,7 @@ def load_config(cur, filename, extra_links=None):
         with open(filename, 'w', encoding='utf-8') as f:
             config.write(f)
     for k, v in links.items():
-        cur.execute('REPLACE INTO anitya_link VALUES (?,?)', (v[0], k))
+        cur.execute('REPLACE INTO anitya_link VALUES (?,?)', (k, v[0]))
 
 def main():
     parser = argparse.ArgumentParser(description="Store and process project versions from Anitya.")
