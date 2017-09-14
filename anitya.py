@@ -28,7 +28,7 @@ def init_db(cur):
                 'backend TEXT,'
                 'version_url TEXT,'
                 'regex TEXT,'
-                'latest_version INTEGER,'
+                'latest_version TEXT,'
                 'updated_on INTEGER,'
                 'created_on INTEGER'
                 ')')
