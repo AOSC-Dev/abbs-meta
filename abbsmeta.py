@@ -50,6 +50,7 @@ class Package:
         self.epoch = None
         self.description = None
         self.commit_time = None
+        self.committer = None
         self.spec = collections.OrderedDict()
         self.dependencies = []
 
@@ -101,6 +102,7 @@ class PackageGroup(Package):
         self.release = None
         self.directory = directory
         self.commit_time = None
+        self.committer = None
         self.spec = collections.OrderedDict()
 
     def __repr__(self):
@@ -163,6 +165,7 @@ class SourceRepo:
         # db for syncing among Fossil, Git and Abbs-meta database
         self.marksdbfile = os.path.join(markpath, name + '-marks.db')
         self.marksdb = sqlite3.connect(self.marksdbfile)
+        self.committers = {}
         self.db.row_factory = self.marksdb.row_factory = sqlite3.Row
         if not os.path.isfile(self.fossilpath):
             self.sync()
@@ -222,6 +225,7 @@ class SourceRepo:
                     'release TEXT,'  # -1
                     'epoch TEXT,'    # 1:
                     'commit_time INTEGER,'
+                    'committer TEXT,'
                     'PRIMARY KEY (package, branch)'
                     ')')
         cur.execute('CREATE TABLE IF NOT EXISTS package_spec ('
@@ -252,7 +256,8 @@ class SourceRepo:
                     "    ELSE epoch || ':' END) || version || "
                     "   (CASE WHEN ifnull(release, '') = '' THEN '' "
                     "    ELSE '-' || release END)) full_version, "
-                    "  pv.commit_time commit_time, t.category tree_category "
+                    "  pv.commit_time commit_time, pv.committer committer, "
+                    "  t.category tree_category "
                     "FROM packages p "
                     "LEFT JOIN trees t ON t.name=p.tree "
                     "LEFT JOIN package_versions pv "
@@ -284,6 +289,9 @@ class SourceRepo:
 
     def sync(self):
         reposync.sync(self.gitpath, self.fossilpath, self.markpath)
+        mcur = self.marksdb.cursor()
+        for email, name in mcur.execute('SELECT email, name FROM committers'):
+            self.committers[email] = name
 
     def file_list(self, mid):
         try:
@@ -328,13 +336,17 @@ class SourceRepo:
                 ret.append(FileChange('+', fn, fid, mperm == 2))
         return ret
 
-    def file_mtime(self, mid, path):
-        return int(self.fossil.execute(
-                'SELECT round((mtime-2440587.5)*86400) FROM event '
-                'LEFT JOIN mlink ON mlink.mid = event.objid '
-                'WHERE mlink.fid = (SELECT rid FROM blob WHERE uuid = ?) '
-                'ORDER BY mtime ASC '
-                'LIMIT 1', (self.file_list(mid)[path][0],)).fetchone()[0])
+    def file_commit_stat(self, mid, path):
+        email, mtime = self.fossil.execute(
+            'SELECT '
+            '  user, CAST(round((mtime-2440587.5)*86400) AS INTEGER) mtime '
+            'FROM event '
+            'LEFT JOIN mlink ON mlink.mid = event.objid '
+            'WHERE mlink.fid = (SELECT rid FROM blob WHERE uuid = ?) '
+            'ORDER BY mtime ASC '
+            'LIMIT 1', (self.file_list(mid)[path][0],)).fetchone()
+        uname = self.committers.get(email, '')
+        return '%s <%s>' % (uname, email), mtime
 
     def exists(self, mid, path, isdir=False, ignorelink=False):
         for fn, v in self.file_list(mid).items():
@@ -383,7 +395,8 @@ class SourceRepo:
         filelist = self.file_list(mid)
         uuid, specstr = self.getfile(mid, os.path.join(repopath, 'spec'), True)
         pkggroup.load_spec(specstr, uuid[:16])
-        pkggroup.commit_time = self.file_mtime(mid, os.path.join(repopath, 'spec'))
+        pkggroup.commit_time, pkggroup.committer = self.file_commit_stat(
+            mid, os.path.join(repopath, 'spec'))
         for path, fattr in filelist.items():
             if path.startswith(repopath + '/'):
                 dirpath, filename = os.path.split(path)
@@ -441,9 +454,9 @@ class SourceRepo:
         )
         for branch in self.branches_of_commit(mid):
             cur.execute(
-                'REPLACE INTO package_versions VALUES (?,?,?,?,?,?)',
+                'REPLACE INTO package_versions VALUES (?,?,?,?,?,?,?)',
                 (pkg.name, branch, pkg.version, pkg.release,
-                pkg.epoch, pkg.commit_time)
+                pkg.epoch, pkg.commit_time, pkg.committer)
             )
             if branch == self.mainbranch:
                 cur.execute('DELETE FROM package_spec WHERE package = ?', (pkg.name,))
