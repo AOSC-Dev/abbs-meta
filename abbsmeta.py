@@ -118,6 +118,7 @@ class PackageGroup(Package):
     def package(self, defines_fp, defines_filename=None):
         cls = Package(self.tree, self.secpath, self.directory, self.name)
         cls.commit_time = self.commit_time
+        cls.committer = self.committer
         cls.spec = self.spec.copy()
         cls.version = self.version
         cls.release = self.release
@@ -337,16 +338,16 @@ class SourceRepo:
         return ret
 
     def file_commit_stat(self, mid, path):
-        email, mtime = self.fossil.execute(
+        mtime, email = self.fossil.execute(
             'SELECT '
-            '  user, CAST(round((mtime-2440587.5)*86400) AS INTEGER) mtime '
+            '  CAST(round((mtime-2440587.5)*86400) AS INTEGER) mtimeunix, user '
             'FROM event '
             'LEFT JOIN mlink ON mlink.mid = event.objid '
             'WHERE mlink.fid = (SELECT rid FROM blob WHERE uuid = ?) '
             'ORDER BY mtime ASC '
             'LIMIT 1', (self.file_list(mid)[path][0],)).fetchone()
         uname = self.committers.get(email, '')
-        return '%s <%s>' % (uname, email), mtime
+        return mtime, '%s <%s>' % (uname, email)
 
     def exists(self, mid, path, isdir=False, ignorelink=False):
         for fn, v in self.file_list(mid).items():
