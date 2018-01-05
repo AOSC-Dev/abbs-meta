@@ -146,7 +146,7 @@ def fossil_filelist(fslhandle, mid):
         fsl = fossil.Repo(fslhandle, cachesize=0)
     d = collections.OrderedDict((
         (row[0], (row[1], row[2] if len(row) > 2 else ''))
-        for row in getattr(fsl.manifest(mid), 'F', ()))
+        for row in getattr(fsl.manifest(mid), 'F', ())))
     return d
 
 def ignore_cancelled(fn):
