@@ -146,7 +146,7 @@ def fossil_filelist(fslhandle, mid):
         fsl = fossil.Repo(fslhandle, cachesize=0)
     d = collections.OrderedDict((
         (row[0], (row[1], row[2] if len(row) > 2 else ''))
-        for row in fsl.manifest(mid).F))
+        for row in getattr(fsl.manifest(mid), 'F', ()))
     return d
 
 def ignore_cancelled(fn):
@@ -190,8 +190,8 @@ class SourceRepo:
         if not os.path.isfile(self.fossilpath):
             self.sync()
         self.fossil = fossil.Repo(self.fossilpath)
-        self._cache_flist = fossil.LRUCache(16)
         self.jobs = jobs or max(len(os.sched_getaffinity(0))-1, 1)
+        self._cache_flist = fossil.LRUCache(self.jobs*4)
         self.executor = concurrent.futures.ProcessPoolExecutor(self.jobs)
 
     def __repr__(self):
