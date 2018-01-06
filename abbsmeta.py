@@ -8,9 +8,7 @@ import time
 import sqlite3
 import logging
 import argparse
-import operator
 import collections
-import concurrent.futures
 
 import fossil
 import bashvar
@@ -139,26 +137,9 @@ def parse_commit_msg(name, text):
             return match.group(2)
     return text
 
-def fossil_filelist(fslhandle, mid):
-    if isinstance(fslhandle, fossil.Repo):
-        fsl = fslhandle
-    else:
-        fsl = fossil.Repo(fslhandle, cachesize=0)
-    d = collections.OrderedDict((
-        (row[0], (row[1], row[2] if len(row) > 2 else ''))
-        for row in getattr(fsl.manifest(mid), 'F', ())))
-    return d
-
-def ignore_cancelled(fn):
-    def wrapped(future):
-        if future.cancelled():
-            return
-        return fn(future)
-    return wrapped
-
 class SourceRepo:
     def __init__(self, name, basepath, markpath, dbfile, mainbranch,
-                 branches=None, category='base', url=None, priority=0, jobs=None):
+                 branches=None, category='base', url=None, priority=0):
         # tree name
         if '/' in name:
             raise ValueError("'/' not allowed in name. Use basepath to change directory")
@@ -190,9 +171,7 @@ class SourceRepo:
         if not os.path.isfile(self.fossilpath):
             self.sync()
         self.fossil = fossil.Repo(self.fossilpath)
-        self.jobs = jobs or max(len(os.sched_getaffinity(0))-1, 1)
-        self._cache_flist = fossil.LRUCache(self.jobs*4)
-        self.executor = concurrent.futures.ProcessPoolExecutor(self.jobs)
+        self._cache_flist = fossil.LRUCache(16)
 
     def __repr__(self):
         return "<SourceRepo %s, basepath=%s>" % (self.name, self.basepath)
@@ -321,7 +300,10 @@ class SourceRepo:
         if mid in self._cache_flist:
             return self._cache_flist[mid]
         else:
-            self._cache_flist[mid] = flist = fossil_filelist(self.fossil, mid)
+            self._cache_flist[mid] = flist = collections.OrderedDict((
+                (row[0], (row[1], row[2] if len(row) > 2 else ''))
+                for row in self.fossil.manifest(mid).F
+            ))
             return flist
 
     def getfile(self, mid, path, text=False):
@@ -588,45 +570,16 @@ class SourceRepo:
         last_rid = mcur.execute(
             'SELECT rid FROM package_rel ORDER BY rid DESC LIMIT 1').fetchone()
         last_rid = last_rid[0] if last_rid else 0
-        revisions = self.fossil.execute(
+        for mtime, mid, uuid in self.fossil.execute(
             "SELECT round((mtime-2440587.5)*86400), objid, blob.uuid "
             "FROM event "
             "LEFT JOIN blob ON blob.rid=event.objid "
             "WHERE (mtime>=? OR objid>?) AND type='ci' ORDER BY mtime, objid",
-            (fossil.unix_to_julian(last_update), last_rid)).fetchall()
-        revnum = len(revisions)
-        futures = {}
-        for i, revision in enumerate(revisions):
-            mtime, mid, uuid = revision
+            (fossil.unix_to_julian(last_update), last_rid)).fetchall():
             if not self.branches_of_commit(mid):
                 continue
-            # multiprocessing prefetch
-            if self.jobs > 1:
-                firstft = None
-                for j in range(i, min(i+self.jobs, revnum)):
-                    if j in futures:
-                        continue
-                    jmid = revisions[j][1]
-                    if jmid not in self._cache_flist:
-                        ft = self.executor.submit(fossil_filelist,
-                                                  self.fossilpath, jmid)
-                        ft.add_done_callback(
-                            lambda f: operator.setitem(
-                            self._cache_flist, jmid, f.result())
-                            if not f.cancelled() else None)
-                        if j == 0:
-                            firstft = ft
-                        futures[j] = ft
-                # wait for first to arrive to prevent cache bloat
-                if firstft:
-                    firstft.result()
             logging.info('%s: %d %s', time.strftime('%Y-%m-%d', time.gmtime(mtime)), mid, uuid[:16])
             self.scan_abbs_tree(mid)
-            if i in futures:
-                futures[i].cancel()
-                del futures[i]
-        [future.cancel() for future in futures.values()]
-        self.executor.shutdown()
         logging.info('Done.')
 
     def reset_progress(self):
@@ -658,7 +611,6 @@ def main():
     parser.add_argument("-c", "--category", help="Category, 'base' or 'bsp'", default="base")
     parser.add_argument("-u", "--url", help="Repo url")
     parser.add_argument("-P", "--priority", help="Priority to consider", type=int, default=0)
-    parser.add_argument("-j", "--jobs", help="Parallel prefetch jobs, default: cpu count", type=int)
     parser.add_argument("-v", "--verbose", help="Show debug logs", action='store_true')
     parser.add_argument("--no-sync", help="Don't sync Git and Fossil repos", action='store_true')
     parser.add_argument("--reset", help="Reset sync status", action='store_true')
@@ -671,7 +623,7 @@ def main():
     repo = SourceRepo(
         args.name, args.basepath, args.markpath, args.dbfile,
         args.mainbranch, args.branches.split(','),
-        args.category, args.url, args.priority, args.jobs)
+        args.category, args.url, args.priority)
     repo.update(not args.no_sync, args.reset)
 
 if __name__ == '__main__':
