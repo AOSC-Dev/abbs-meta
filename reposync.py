@@ -87,12 +87,7 @@ def sync(gitpath, fossilpath, markpath):
     committers = collections.defaultdict(collections.Counter)
     gitname = os.path.basename(os.path.abspath(gitpath.rstrip('/')))
     fossilname = os.path.splitext(os.path.basename(fossilpath))[0]
-    newfossil = False
-    if not os.path.isfile(fossilpath):
-        newfossil = True
-        subprocess.Popen((FOSSIL, 'new', '--sha1', fossilpath)).wait()
-        subprocess.Popen((FOSSIL, 'rebuild', '--wal', fossilpath)).wait()
-        subprocess.Popen((FOSSIL, 'sqlite3', '-R', fossilpath, "INSERT OR REPLACE INTO config VALUES ('project-name', '%s', now());" % fossilname)).wait()
+    newfossil = not os.path.isfile(fossilpath)
     gitmarks = os.path.abspath(os.path.join(markpath, gitname + '.git-marks'))
     fossilmarks = os.path.abspath(os.path.join(markpath, fossilname + '.fossil-marks'))
     touch(gitmarks)
@@ -101,10 +96,9 @@ def sync(gitpath, fossilpath, markpath):
         (GIT, 'fast-export', '--all', '--signed-tags=strip',
         '--import-marks=' + gitmarks, '--export-marks=' + gitmarks),
         stdout=subprocess.PIPE, cwd=gitpath)
-    fossilcmd = (FOSSIL, 'import', '--git', '--incremental',
-                 '--import-marks', fossilmarks, '--export-marks', fossilmarks)
+    fossilcmd = (FOSSIL, 'import', '--git', '--export-marks', fossilmarks)
     if not newfossil:
-        fossilcmd += ('--no-rebuild',)
+        fossilcmd += ('--no-rebuild', '--incremental', '--import-marks', fossilmarks)
     fossil = subprocess.Popen(fossilcmd + (fossilpath,), stdin=subprocess.PIPE)
     for line in git.stdout:
         match = re_committer.match(line)
@@ -115,6 +109,9 @@ def sync(gitpath, fossilpath, markpath):
     git.stdout.close()
     git.wait()
     fossil.wait()
+    if newfossil:
+        subprocess.Popen((FOSSIL, 'sqlite3', '-R', fossilpath, "INSERT OR REPLACE INTO config VALUES ('project-name', '%s', now());" % fossilname)).wait()
+        subprocess.Popen((FOSSIL, 'rebuild', '--ifneeded', '--wal', '--analyze', '--index', fossilpath)).wait()
     marksdb = sqlite3.connect(os.path.join(markpath, fossilname + '-marks.db'))
     store_marks(marksdb, gitmarks, fossilmarks)
     store_committers(marksdb, committers)
