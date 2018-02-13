@@ -15,7 +15,6 @@ FOSSIL = os.environ.get('FOSSIL', 'fossil')
 
 FSL_CONFIG = {
 'index-page': '/dir?ci=tip',
-'search-ci': '1',
 }
 
 def touch(filename):
@@ -118,7 +117,7 @@ def sync(gitpath, fossilpath, markpath, rebuild=False):
         subprocess.Popen((FOSSIL, 'sqlite3', '-R', fossilpath, "INSERT OR REPLACE INTO config VALUES ('project-name', '%s', now());" % fossilname)).wait()
         for row in FSL_CONFIG.items():
             subprocess.Popen((FOSSIL, 'sqlite3', '-R', fossilpath, "INSERT OR REPLACE INTO config VALUES ('%s', '%s', now());" % row)).wait()
-        subprocess.Popen((FOSSIL, 'fts-config', '-R', fossilpath, 'enable', 'dtwe')).wait()
+        subprocess.Popen((FOSSIL, 'fts-config', '-R', fossilpath, 'enable', 'cdtwe')).wait()
         subprocess.Popen((FOSSIL, 'fts-config', '-R', fossilpath, 'stemmer', 'on')).wait()
         subprocess.Popen((FOSSIL, 'fts-config', '-R', fossilpath, 'index', 'on')).wait()
         subprocess.Popen((FOSSIL, 'rebuild', '--ifneeded', '--wal', '--analyze', '--index', fossilpath)).wait()
