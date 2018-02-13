@@ -13,6 +13,11 @@ re_committer = re.compile(b'^committer (.+) <(.+)> \d+.+$')
 GIT = os.environ.get('GIT', 'git')
 FOSSIL = os.environ.get('FOSSIL', 'fossil')
 
+FSL_CONFIG = {
+'index-page': '/dir?ci=tip',
+'search-ci': '1',
+}
+
 def touch(filename):
     open(filename, 'a').close()
 
@@ -83,7 +88,7 @@ def store_branches(db, fossilpath):
     cur.execute('ATTACH DATABASE ? AS fossil', (fossilpath,))
     cur.execute(sql)
 
-def sync(gitpath, fossilpath, markpath):
+def sync(gitpath, fossilpath, markpath, rebuild=False):
     committers = collections.defaultdict(collections.Counter)
     gitname = os.path.basename(os.path.abspath(gitpath.rstrip('/')))
     fossilname = os.path.splitext(os.path.basename(fossilpath))[0]
@@ -109,8 +114,13 @@ def sync(gitpath, fossilpath, markpath):
     git.stdout.close()
     git.wait()
     fossil.wait()
-    if newfossil:
+    if newfossil or rebuild:
         subprocess.Popen((FOSSIL, 'sqlite3', '-R', fossilpath, "INSERT OR REPLACE INTO config VALUES ('project-name', '%s', now());" % fossilname)).wait()
+        for row in FSL_CONFIG.items():
+            subprocess.Popen((FOSSIL, 'sqlite3', '-R', fossilpath, "INSERT OR REPLACE INTO config VALUES ('%s', '%s', now());" % row)).wait()
+        subprocess.Popen((FOSSIL, 'fts-config', '-R', fossilpath, 'enable', 'dtwe')).wait()
+        subprocess.Popen((FOSSIL, 'fts-config', '-R', fossilpath, 'stemmer', 'on')).wait()
+        subprocess.Popen((FOSSIL, 'fts-config', '-R', fossilpath, 'index', 'on')).wait()
         subprocess.Popen((FOSSIL, 'rebuild', '--ifneeded', '--wal', '--analyze', '--index', fossilpath)).wait()
     marksdb = sqlite3.connect(os.path.join(markpath, fossilname + '-marks.db'))
     store_marks(marksdb, gitmarks, fossilmarks)
