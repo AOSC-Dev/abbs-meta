@@ -100,7 +100,7 @@ def sync(gitpath, fossilpath, markpath, rebuild=False):
         (GIT, 'fast-export', '--all', '--signed-tags=strip',
         '--import-marks=' + gitmarks, '--export-marks=' + gitmarks),
         stdout=subprocess.PIPE, cwd=gitpath)
-    fossilcmd = (FOSSIL, 'import', '--git', '--export-marks', fossilmarks)
+    fossilcmd = (FOSSIL, 'import', '--git', '--use-author', '--export-marks', fossilmarks)
     if not newfossil:
         fossilcmd += ('--no-rebuild', '--incremental', '--import-marks', fossilmarks)
     fossil = subprocess.Popen(fossilcmd + (fossilpath,), stdin=subprocess.PIPE)
