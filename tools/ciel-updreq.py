@@ -144,7 +144,7 @@ def interactive(instance, package, build_only=False):
         logging.warning('Will not test.')
         testcmd = None
     subprocess.run(SUDO + ('ciel', 'shell', '-i', instance, testcmd))
-    subprocess.run(('git', 'diff'), cwd='TREE').check_returncode()
+    subprocess.run(('git', 'diff', path), cwd='TREE').check_returncode()
     if ask('Commit?', yn=True):
         msg = '%s: update to %s' % (package, newver)
         subprocess.run(

@@ -85,7 +85,12 @@ class Package:
         for rel in ('PKGDEP', 'PKGRECOM', 'PKGBREAK', 'PKGCONFL', 'PKGREP',
                     'BUILDDEP', 'PKGDEP_DPKG', 'PKGDEP_RPM'):
             for pkgname in self.spec.pop(rel, '').split():
-                deppkg, depver = re_packagename.match(pkgname).groups()
+                match = re_packagename.match(pkgname)
+                if not match:
+                    logging.warning('invalid dependency definition in %s/%s: "%s"',
+                        name, rel, pkgname)
+                    continue
+                deppkg, depver = match.groups()
                 dependencies.append((name, deppkg, depver, rel))
         self.dependencies = uniq(dependencies)
 
