@@ -94,8 +94,28 @@ def sync(gitpath, fossilpath, markpath, rebuild=False):
     newfossil = not os.path.isfile(fossilpath)
     gitmarks = os.path.abspath(os.path.join(markpath, gitname + '.git-marks'))
     fossilmarks = os.path.abspath(os.path.join(markpath, fossilname + '.fossil-marks'))
+    marksdbname = os.path.join(markpath, fossilname + '-marks.db')
     touch(gitmarks)
     touch(fossilmarks)
+    if not newfossil:
+        # prevent object not found errors
+        memdb = sqlite3.connect(':memory:')
+        cur = memdb.cursor()
+        cur.execute('CREATE TABLE gitrev (githash TEXT PRIMARY KEY)')
+        git = subprocess.Popen((GIT, 'rev-list', '--all'),
+                               stdout=subprocess.PIPE, cwd=gitpath)
+        for ln in git.stdout:
+            cur.execute('INSERT OR IGNORE INTO gitrev VALUES (?)',
+                        (ln.decode('utf-8').strip(),))
+        git.wait()
+        memdb.commit()
+        cur.execute('ATTACH ? AS marks', (marksdbname,))
+        with open(gitmarks, 'w') as f:
+            for row in cur.execute(
+                'SELECT name, githash FROM marks.marks m '
+                'INNER JOIN gitrev g USING (githash)'):
+                f.write(' '.join(row) + '\n')
+        memdb.close()
     git = subprocess.Popen(
         (GIT, 'fast-export', '--all', '--signed-tags=strip',
         '--import-marks=' + gitmarks, '--export-marks=' + gitmarks),
@@ -121,7 +141,7 @@ def sync(gitpath, fossilpath, markpath, rebuild=False):
         subprocess.Popen((FOSSIL, 'fts-config', '-R', fossilpath, 'stemmer', 'on')).wait()
         subprocess.Popen((FOSSIL, 'fts-config', '-R', fossilpath, 'index', 'on')).wait()
         subprocess.Popen((FOSSIL, 'rebuild', '--ifneeded', '--wal', '--analyze', '--index', fossilpath)).wait()
-    marksdb = sqlite3.connect(os.path.join(markpath, fossilname + '-marks.db'))
+    marksdb = sqlite3.connect(marksdbname)
     store_marks(marksdb, gitmarks, fossilmarks)
     store_committers(marksdb, committers)
     store_branches(marksdb, fossilpath)
