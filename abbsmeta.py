@@ -610,7 +610,7 @@ def main():
     parser.add_argument("-p", "--basepath", help="Directory with both Git and Fossil repositories", default=".", metavar='PATH')
     parser.add_argument("-m", "--markpath", help="Directory with Git and Fossil sync marks", default=".", metavar='PATH')
     parser.add_argument("-d", "--dbfile", help="Abbs meta database file", default="abbs.db", metavar='FILE')
-    parser.add_argument("-b", "--branches", help="Branches to consider, seperated by comma (,)", default="staging,master,bugfix")
+    parser.add_argument("-b", "--branches", help="Branches to consider, seperated by comma (,)", default="explosive,stable,testing")
     parser.add_argument("-B", "--mainbranch", help="Git repo main branch name", default="master", metavar='BRANCH')
     parser.add_argument("-c", "--category", help="Category, 'base' or 'bsp'", default="base")
     parser.add_argument("-u", "--url", help="Repo url")
