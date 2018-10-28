@@ -591,9 +591,11 @@ class SourceRepo:
         cur.execute('DELETE FROM package_versions WHERE package IN '
                     '(SELECT name FROM packages WHERE tree=?)', (self.name,))
         cur.execute('DELETE FROM package_duplicate WHERE tree=?', (self.name,))
+        self.db.commit()
         cur.execute('VACUUM')
         mcur = self.marksdb.cursor()
         mcur.execute('DELETE FROM package_rel')
+        self.marksdb.commit()
         mcur.execute('VACUUM')
         self.db.commit()
         self.marksdb.commit()
