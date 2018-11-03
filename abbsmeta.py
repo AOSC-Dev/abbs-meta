@@ -264,7 +264,7 @@ class SourceRepo:
                     "    ELSE '-' || release END)) full_version, "
                     "  pv.commit_time commit_time, pv.committer committer "
                     "FROM packages p "
-                    "LEFT JOIN trees t ON t.name=p.tree "
+                    "INNER JOIN trees t ON t.name=p.tree "
                     "LEFT JOIN package_versions pv "
                     "  ON pv.package=p.name AND pv.branch=t.mainbranch")
         cur.execute('CREATE INDEX IF NOT EXISTS idx_package_duplicate'
