@@ -260,7 +260,7 @@ class SourceRepo:
                     "  section, pkg_section, directory, description, version, "
                     "  ((CASE WHEN ifnull(epoch, '') = '' THEN '' "
                     "    ELSE epoch || ':' END) || version || "
-                    "   (CASE WHEN ifnull(release, '') = '' THEN '' "
+                    "   (CASE WHEN ifnull(release, '') IN ('', '0') THEN '' "
                     "    ELSE '-' || release END)) full_version, "
                     "  pv.commit_time commit_time, pv.committer committer "
                     "FROM packages p "
