@@ -82,7 +82,6 @@ def store_branches(db, fossilpath):
         'rid INTEGER, tagid INTEGER, tagname TEXT, '
         'PRIMARY KEY (rid, tagid)'
     ')')
-    cur.execute('CREATE INDEX IF NOT EXISTS idx_branches ON branches (rid)')
     db.commit()
     cur.execute('ATTACH DATABASE ? AS fossil', (fossilpath,))
     cur.execute(sql)

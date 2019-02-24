@@ -201,11 +201,17 @@ class SourceRepo:
         cur = self.db.cursor()
         cur.execute('PRAGMA journal_mode=WAL')
         cur.execute('CREATE TABLE IF NOT EXISTS trees ('
-                    'name TEXT PRIMARY KEY,'
+                    'tid INTEGER PRIMARY KEY,' # also priority
+                    'name TEXT UNIQUE,'
                     'category TEXT,' # base, bsp
                     'url TEXT,' # github
-                    'priority INTEGER,'
                     'mainbranch TEXT'
+                    ')')
+        cur.execute('CREATE TABLE IF NOT EXISTS tree_branches ('
+                    'tree TEXT,'
+                    'branch TEXT,'
+                    'priority INTEGER,'
+                    'PRIMARY KEY (tree, branch)'
                     ')')
         cur.execute('CREATE TABLE IF NOT EXISTS packages ('
                     'name TEXT PRIMARY KEY,'  # coreutils
@@ -267,20 +273,15 @@ class SourceRepo:
                     "INNER JOIN trees t ON t.name=p.tree "
                     "LEFT JOIN package_versions pv "
                     "  ON pv.package=p.name AND pv.branch=t.mainbranch")
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_package_duplicate'
-                    ' ON package_duplicate (package)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_package_versions'
-                    ' ON package_versions (package, branch)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_package_spec'
-                    ' ON package_spec (package)')
-        cur.execute('CREATE INDEX IF NOT EXISTS idx_package_dependencies'
-                    ' ON package_dependencies (package)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_package_dependencies_rev'
                     ' ON package_dependencies (dependency)')
         cur.execute('CREATE VIRTUAL TABLE IF NOT EXISTS fts_packages'
                     ' USING fts5(name, description, tokenize = porter)')
-        cur.execute('REPLACE INTO trees VALUES (?,?,?,?,?)', (self.name,
-                    self.category, self.url, self.priority, self.mainbranch))
+        cur.execute('REPLACE INTO trees VALUES (?,?,?,?,?)', (self.priority,
+                    self.name, self.category, self.url, self.mainbranch))
+        for k, branch in enumerate(self.branches):
+            cur.execute('REPLACE INTO tree_branches VALUES (?,?,?)', (
+                        self.name, branch, k))
         mcur = self.marksdb.cursor()
         mcur.execute('PRAGMA journal_mode=WAL')
         mcur.execute('CREATE TABLE IF NOT EXISTS package_rel ('
@@ -612,7 +613,7 @@ def main():
     parser.add_argument("-p", "--basepath", help="Directory with both Git and Fossil repositories", default=".", metavar='PATH')
     parser.add_argument("-m", "--markpath", help="Directory with Git and Fossil sync marks", default=".", metavar='PATH')
     parser.add_argument("-d", "--dbfile", help="Abbs meta database file", default="abbs.db", metavar='FILE')
-    parser.add_argument("-b", "--branches", help="Branches to consider, seperated by comma (,)", default="explosive,stable,testing")
+    parser.add_argument("-b", "--branches", help="Branches to consider, seperated by comma (,)", default="stable,testing,explosive")
     parser.add_argument("-B", "--mainbranch", help="Git repo main branch name", default="master", metavar='BRANCH')
     parser.add_argument("-c", "--category", help="Category, 'base' or 'bsp'", default="base")
     parser.add_argument("-u", "--url", help="Repo url")
