@@ -84,6 +84,9 @@ ParseException = pp.ParseException
 class VariableWarning(UserWarning):
     pass
 
+class BashErrorWarning(UserWarning):
+    pass
+
 class ParseError(Exception):
     pass
 
@@ -168,26 +171,35 @@ def eval_bashvar_ext(source, filename=None):
         stdin.append('echo "${%s//$\'\\n\'/\\\\n}"\n' % v)
     with tempfile.TemporaryDirectory() as tmpdir:
         outs, errs = subprocess.Popen(
-            ('bash',), cwd=tmpdir,
+            ('bash', '-r'), cwd=tmpdir, env={},
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE).communicate(''.join(stdin).encode('utf-8'))
     if errs:
-        logging.warning('%s: %s', filename, errs.decode('utf-8', 'backslashreplace').rstrip())
+        warnings.warn(errs.decode('utf-8', 'backslashreplace').rstrip(),
+            BashErrorWarning)
     lines = [l.replace('\\n', '\n') for l in outs.decode('utf-8').splitlines()]
-    if len(var) != len(lines):
-        logging.error('%s: bash output not expected', filename)
+    if len(var) != len(lines) and not errs:
+        warnings.warn('bash output not expected', BashErrorWarning)
     return collections.OrderedDict(zip(var, lines))
 
-def eval_bashvar(source, filename=None):
-    try:
-        with warnings.catch_warnings(record=True) as wns:
+def eval_bashvar(source, filename=None, msg=False):
+    with warnings.catch_warnings(record=True) as wns:
+        try:
             ret = eval_bashvar_literal(source)
-            for w in wns:
-                if issubclass(w.category, VariableWarning):
-                    logging.warning('%s: %s', filename, w.message)
+        except pp.ParseException:
+            ret = eval_bashvar_ext(source)
+        msgs = []
+        for w in wns:
+            if issubclass(w.category, VariableWarning):
+                logging.warning('%s: %s', filename, w.message)
+            elif issubclass(w.category, BashErrorWarning):
+                msgs.append(str(w.message))
+                logging.error('%s: %s', filename, w.message)
+        if msg:
+            return ret, '\n'.join(msgs) if msgs else None
+        else:
             return ret
-    except pp.ParseException:
-        return eval_bashvar_ext(source, filename)
 
-def read_bashvar(fp, filename=None):
-    return eval_bashvar(fp.read(), filename or getattr(fp, 'name', None))
+def read_bashvar(fp, filename=None, msg=False):
+    return eval_bashvar(
+        fp.read(), filename or getattr(fp, 'name', None), msg)

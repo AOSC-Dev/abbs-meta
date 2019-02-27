@@ -53,6 +53,10 @@ class Package:
         self.committer = None
         self.spec = collections.OrderedDict()
         self.dependencies = []
+        self.fn_spec = None
+        self.fn_defines = None
+        self.err_spec = None
+        self.err_defines = None
 
     def __repr__(self):
         return "Package('%s', '%s', '%s', %r)" % (
@@ -64,14 +68,16 @@ class Package:
                 (other.__class__.__name__, other.tree,
                 other.secpath, other.directory, self.name))
 
-    def load_spec(self, fp, filename=None):
-        result = bashvar.read_bashvar(fp, filename)
+    def load_spec(self, fp, filename=None, fileid=None):
+        self.fn_spec = filename
+        result, self.err_spec = bashvar.read_bashvar(fp, fileid, True)
         self.spec.update(result)
         self.version = self.spec.pop('VER', None)
         self.release = self.spec.pop('REL', None)
 
-    def load_defines(self, fp, filename=None):
-        result = bashvar.read_bashvar(fp, filename)
+    def load_defines(self, fp, filename=None, fileid=None):
+        self.fn_defines = filename
+        result, self.err_defines = bashvar.read_bashvar(fp, fileid, True)
         self.spec.update(result)
         name = self.spec.pop('PKGNAME', None)
         if not name:
@@ -109,6 +115,8 @@ class PackageGroup(Package):
         self.commit_time = None
         self.committer = None
         self.spec = collections.OrderedDict()
+        self.fn_spec = None
+        self.err_spec = None
 
     def __repr__(self):
         return "PackageGroup('%s', '%s', '%s', %r)" % (
@@ -120,14 +128,16 @@ class PackageGroup(Package):
                 (other.__class__.__name__, other.tree,
                 other.secpath, other.directory))
 
-    def package(self, defines_fp, defines_filename=None):
+    def package(self, defines_fp, defines_filename=None, defines_fileid=None):
         cls = Package(self.tree, self.secpath, self.directory, self.name)
         cls.commit_time = self.commit_time
         cls.committer = self.committer
         cls.spec = self.spec.copy()
         cls.version = self.version
         cls.release = self.release
-        cls.load_defines(defines_fp, defines_filename)
+        cls.fn_spec = self.fn_spec
+        cls.err_spec = self.err_spec
+        cls.load_defines(defines_fp, defines_filename, defines_fileid)
         return cls
 
 def parse_commit_msg(name, text):
@@ -290,6 +300,12 @@ class SourceRepo:
                      'message TEXT, '
                      'PRIMARY KEY (rid, package)'
                      ')')
+        mcur.execute('CREATE TABLE IF NOT EXISTS package_basherr ('
+                     'rid INTEGER, filename TEXT, '
+                     'category TEXT, section TEXT, directory TEXT, '
+                     'package TEXT, err TEXT, '
+                     'PRIMARY KEY (rid, filename)'
+                     ')')
         mcur.execute('CREATE INDEX IF NOT EXISTS idx_package_rel'
                      ' ON package_rel (package)')
         self.db.commit()
@@ -401,8 +417,9 @@ class SourceRepo:
         repopath = os.path.join(pkggroup.secpath, pkggroup.directory)
         logging.debug('read %r', pkggroup)
         filelist = self.file_list(mid)
-        uuid, specstr = self.getfile(mid, os.path.join(repopath, 'spec'), True)
-        pkggroup.load_spec(specstr, uuid[:16])
+        specfn = os.path.join(repopath, 'spec')
+        uuid, specstr = self.getfile(mid, specfn, True)
+        pkggroup.load_spec(specstr, specfn, uuid[:16])
         pkggroup.commit_time, pkggroup.committer = self.file_commit_stat(
             mid, os.path.join(repopath, 'spec'))
         for path, fattr in filelist.items():
@@ -410,9 +427,9 @@ class SourceRepo:
                 dirpath, filename = os.path.split(path)
                 if filename != 'defines':
                     continue
-                uuid, defines = self.getfile(
-                    mid, os.path.join(dirpath, 'defines'), True)
-                pkg = pkggroup.package(defines, uuid[:16])
+                definesfn = os.path.join(dirpath, 'defines')
+                uuid, defines = self.getfile(mid, definesfn, True)
+                pkg = pkggroup.package(defines, definesfn, uuid[:16])
                 results.append(pkg)
         return results
 
@@ -544,6 +561,20 @@ class SourceRepo:
                         'REPLACE INTO package_rel VALUES (?,?,?,?,?,?)',
                         (mid, pkg.name, pkg.version, pkg.release, pkg.epoch, cmsg)
                     )
+                    if pkg.err_defines:
+                        mcur.execute(
+                            'REPLACE INTO package_basherr VALUES (?,?,?,?,?,?,?)',
+                            (mid, pkg.fn_defines, pkggroup.category or '',
+                            pkggroup.section, pkggroup.directory, pkg.name,
+                            pkg.err_defines)
+                        )
+                if pkggroup.err_spec:
+                    mcur.execute(
+                        'REPLACE INTO package_basherr VALUES (?,?,?,?,?,?,?)',
+                        (mid, pkggroup.fn_spec, pkggroup.category or '',
+                        pkggroup.section, pkggroup.directory, None,
+                        pkggroup.err_spec)
+                    )
         # make up for the deleted duplicate
         for secpath, directory in cur.execute(
             "SELECT "
@@ -596,6 +627,7 @@ class SourceRepo:
         cur.execute('VACUUM')
         mcur = self.marksdb.cursor()
         mcur.execute('DELETE FROM package_rel')
+        mcur.execute('DELETE FROM package_basherr')
         self.marksdb.commit()
         mcur.execute('VACUUM')
         self.db.commit()

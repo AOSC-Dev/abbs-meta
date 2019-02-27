@@ -256,6 +256,7 @@ class Repo:
         self.repository = repository
         self.db = sqlite3.connect(repository)
         self.db.row_factory = sqlite3.Row
+        self.db.execute('PRAGMA case_sensitive_like=1')
         self.check = check
         self.cache = LRUCache(cachesize)
 
