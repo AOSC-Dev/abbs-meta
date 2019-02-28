@@ -248,6 +248,7 @@ class SourceRepo:
                     'epoch TEXT,'    # 1:
                     'commit_time INTEGER,'
                     'committer TEXT,'
+                    'githash TEXT,'
                     'PRIMARY KEY (package, branch)'
                     ')')
         cur.execute('CREATE TABLE IF NOT EXISTS package_spec ('
@@ -312,7 +313,8 @@ class SourceRepo:
         self.marksdb.commit()
 
     def sync(self):
-        reposync.sync(self.gitpath, self.fossilpath, self.markpath)
+        reposync.sync(self.gitpath, self.fossilpath, self.markpath,
+                      trackbranches=self.branches)
         mcur = self.marksdb.cursor()
         for email, name in mcur.execute('SELECT email, name FROM committers'):
             self.committers[email] = name
@@ -433,7 +435,7 @@ class SourceRepo:
                 results.append(pkg)
         return results
 
-    def update_package(self, mid, pkg):
+    def update_package(self, mid, githash, pkg):
         cur = self.db.cursor()
         existing = cur.execute(
             'SELECT tree, category, section, directory '
@@ -492,9 +494,9 @@ class SourceRepo:
             )
         for branch in self.branches_of_commit(mid):
             cur.execute(
-                'REPLACE INTO package_versions VALUES (?,?,?,?,?,?,?)',
+                'REPLACE INTO package_versions VALUES (?,?,?,?,?,?,?,?)',
                 (pkg.name, branch, pkg.version, pkg.release,
-                pkg.epoch, pkg.commit_time, pkg.committer)
+                pkg.epoch, pkg.commit_time, pkg.committer, githash)
             )
             if branch == self.mainbranch:
                 cur.execute('DELETE FROM package_spec WHERE package = ?', (pkg.name,))
@@ -514,6 +516,8 @@ class SourceRepo:
             'SELECT 1 FROM package_rel WHERE rid = ?', (mid,)).fetchone()
         if exist:
             return
+        githash = mcur.execute(
+            "SELECT githash FROM marks WHERE rid = ?", (mid,)).fetchone()[0]
         for pkggroup, change in self.list_update(mid):
             for row in cur.execute(
                 'SELECT name FROM packages p '
@@ -551,7 +555,7 @@ class SourceRepo:
             )
             if change == '+':
                 for pkg in self.read_package_info(mid, pkggroup):
-                    self.update_package(mid, pkg)
+                    self.update_package(mid, githash, pkg)
                     cmsg = self.fossil.execute(
                         'SELECT comment FROM event WHERE objid=?', (mid,)).fetchone()
                     cmsg = parse_commit_msg(pkg.name, cmsg[0]) if cmsg else None
@@ -587,7 +591,7 @@ class SourceRepo:
                 continue
             pkggroup = PackageGroup(self.name, secpath, directory)
             for pkg in self.read_package_info(mid, pkggroup):
-                self.update_package(mid, pkg)
+                self.update_package(mid, githash, pkg)
         cur.execute(
             'DELETE FROM package_duplicate WHERE package IN '
             '(SELECT package FROM package_duplicate '

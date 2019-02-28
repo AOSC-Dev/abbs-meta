@@ -54,15 +54,16 @@ def store_committers(db, committers):
         )
     db.commit()
 
-def store_branches(db, fossilpath):
+def store_branches(db, fossilpath, trackbranches=None):
     cur = db.cursor()
+    cur.execute('PRAGMA case_sensitive_like=1')
     sql = (
         # find branch ancestors and tag them with all child branches
         "WITH RECURSIVE t(rid, tagid) AS ("
             "SELECT leaf.rid, tagxref.tagid FROM leaf "
             "LEFT JOIN tagxref ON tagxref.rid=leaf.rid "
             "LEFT JOIN tag ON tag.tagid=tagxref.tagid "
-            "WHERE tagxref.tagtype=2 AND tag.tagname LIKE 'sym-%' "
+            "WHERE tagxref.tagtype=2 AND %s "
             "UNION "
             "SELECT plink.pid, t.tagid FROM t "
             "INNER JOIN plink ON plink.cid=t.rid "
@@ -75,7 +76,7 @@ def store_branches(db, fossilpath):
         "SELECT tagxref.rid rid, tag.tagid tagid, substr(tag.tagname, 5) tagname "
         "FROM tagxref "
         "LEFT JOIN tag ON tag.tagid=tagxref.tagid "
-        "WHERE tagxref.tagtype=2 AND tag.tagname LIKE 'sym-%' "
+        "WHERE tagxref.tagtype=2 AND %s "
         "ORDER BY rid ASC, tagid ASC"
     )
     cur.execute('CREATE TABLE IF NOT EXISTS branches ('
@@ -84,9 +85,15 @@ def store_branches(db, fossilpath):
     ')')
     db.commit()
     cur.execute('ATTACH DATABASE ? AS fossil', (fossilpath,))
-    cur.execute(sql)
+    if trackbranches:
+        vals = ['sym-' + b for b in trackbranches]*2
+        sql = sql % (('tag.tagname IN (%s)' % ','.join(
+            '?' * len(trackbranches)),)*2)
+        cur.execute(sql, vals)
+    else:
+        cur.execute(sql % (("tag.tagname LIKE 'sym-%%'",)*2))
 
-def sync(gitpath, fossilpath, markpath, rebuild=False):
+def sync(gitpath, fossilpath, markpath, rebuild=False, trackbranches=None):
     committers = collections.defaultdict(collections.Counter)
     gitname = os.path.basename(os.path.abspath(gitpath.rstrip('/')))
     fossilname = os.path.splitext(os.path.basename(fossilpath))[0]
@@ -145,7 +152,7 @@ def sync(gitpath, fossilpath, markpath, rebuild=False):
     marksdb = sqlite3.connect(marksdbname)
     store_marks(marksdb, gitmarks, fossilmarks)
     store_committers(marksdb, committers)
-    store_branches(marksdb, fossilpath)
+    store_branches(marksdb, fossilpath, trackbranches)
     cur = marksdb.cursor()
     cur.execute('PRAGMA optimize')
     if newfossil:
