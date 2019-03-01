@@ -217,11 +217,14 @@ class SourceRepo:
                     'url TEXT,' # github
                     'mainbranch TEXT'
                     ')')
+        cur.exeucte('DROP TABLE IF EXISTS tree_branches')
         cur.execute('CREATE TABLE IF NOT EXISTS tree_branches ('
+                    'name TEXT,'
                     'tree TEXT,'
                     'branch TEXT,'
                     'priority INTEGER,'
-                    'PRIMARY KEY (tree, branch)'
+                    'PRIMARY KEY (name),'
+                    'UNIQUE (tree, branch)'
                     ')')
         cur.execute('CREATE TABLE IF NOT EXISTS packages ('
                     'name TEXT PRIMARY KEY,'  # coreutils
@@ -291,8 +294,8 @@ class SourceRepo:
         cur.execute('REPLACE INTO trees VALUES (?,?,?,?,?)', (self.priority,
                     self.name, self.category, self.url, self.mainbranch))
         for k, branch in enumerate(self.branches):
-            cur.execute('REPLACE INTO tree_branches VALUES (?,?,?)', (
-                        self.name, branch, k))
+            cur.execute('REPLACE INTO tree_branches VALUES (?,?,?,?)', (
+                        self.name + '/' + branch, self.name, branch, k))
         mcur = self.marksdb.cursor()
         mcur.execute('PRAGMA journal_mode=WAL')
         mcur.execute('CREATE TABLE IF NOT EXISTS package_rel ('
