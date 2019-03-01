@@ -217,7 +217,6 @@ class SourceRepo:
                     'url TEXT,' # github
                     'mainbranch TEXT'
                     ')')
-        cur.execute('DROP TABLE IF EXISTS tree_branches')
         cur.execute('CREATE TABLE IF NOT EXISTS tree_branches ('
                     'name TEXT,'
                     'tree TEXT,'
@@ -272,7 +271,7 @@ class SourceRepo:
                     # we may have unmatched dependency package name
                     # 'FOREIGN KEY(dependency) REFERENCES packages(name)'
                     ')')
-        cur.execute("DROP VIEW IF EXISTS v_packages")
+        #cur.execute("DROP VIEW IF EXISTS v_packages")
         cur.execute("CREATE VIEW IF NOT EXISTS v_packages AS "
                     "SELECT p.name name, p.tree tree, "
                     "  t.category tree_category, "
