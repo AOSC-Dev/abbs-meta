@@ -217,7 +217,7 @@ class SourceRepo:
                     'url TEXT,' # github
                     'mainbranch TEXT'
                     ')')
-        cur.exeucte('DROP TABLE IF EXISTS tree_branches')
+        cur.execute('DROP TABLE IF EXISTS tree_branches')
         cur.execute('CREATE TABLE IF NOT EXISTS tree_branches ('
                     'name TEXT,'
                     'tree TEXT,'
