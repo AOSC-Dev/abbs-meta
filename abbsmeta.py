@@ -18,7 +18,8 @@ logging.basicConfig(
     format='%(asctime)s %(levelname).1s %(message)s', level=logging.INFO)
 
 re_variable = re.compile(b'^\\s*([a-zA-Z_][a-zA-Z0-9_]*)=')
-re_packagename = re.compile(r'^([a-z0-9][a-z0-9+.-]*)(.*)$')
+re_packagerel = re.compile(
+    r'^([a-z0-9][a-z0-9+.-]*)([<>=]=)?([0-9A-Za-z.+~:-]*)$')
 re_commitmsg = re.compile(r'^\[?([a-z0-9][a-z0-9+. ,{}*/-]*)\]?\:? (.+)$', re.M)
 re_commitrevert = re.compile(r'^(?:Revert ")+(.+?)"+$', re.M)
 abbs_categories = frozenset(('core-', 'base-', 'extra-'))
@@ -91,13 +92,13 @@ class Package:
         for rel in ('PKGDEP', 'PKGRECOM', 'PKGBREAK', 'PKGCONFL', 'PKGREP',
                     'BUILDDEP', 'PKGDEP_DPKG', 'PKGDEP_RPM'):
             for pkgname in self.spec.pop(rel, '').split():
-                match = re_packagename.match(pkgname)
+                match = re_packagerel.match(pkgname)
                 if not match:
                     logging.warning('invalid dependency definition in %s/%s: "%s"',
                         name, rel, pkgname)
                     continue
-                deppkg, depver = match.groups()
-                dependencies.append((name, deppkg, depver, rel))
+                deppkg, relop, depver = match.groups()
+                dependencies.append((name, deppkg, relop, depver or None, rel))
         self.dependencies = uniq(dependencies)
 
 class PackageGroup(Package):
@@ -263,6 +264,7 @@ class SourceRepo:
         cur.execute('CREATE TABLE IF NOT EXISTS package_dependencies ('
                     'package TEXT,'
                     'dependency TEXT,'
+                    'relop TEXT,'
                     'version TEXT,'
                     # PKGDEP, PKGRECOM, PKGBREAK, PKGCONFL, PKGREP, BUILDDEP
                     'relationship TEXT,'
@@ -507,8 +509,9 @@ class SourceRepo:
                                 (pkg.name, k, v))
                 cur.execute('DELETE FROM package_dependencies WHERE package = ?',
                             (pkg.name,))
-                cur.executemany('REPLACE INTO package_dependencies VALUES (?,?,?,?)',
-                                pkg.dependencies)
+                cur.executemany(
+                    'REPLACE INTO package_dependencies VALUES (?,?,?,?,?)',
+                    pkg.dependencies)
         logging.debug('add: ' + pkg.name)
 
     def scan_abbs_tree(self, mid):
