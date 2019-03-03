@@ -105,25 +105,6 @@ def sync(gitpath, fossilpath, markpath, rebuild=False, trackbranches=None):
     touch(fossilmarks)
     if newfossil:
         subprocess.Popen((GIT, 'config', 'gc.auto', '0'), cwd=gitpath).wait()
-    else:
-        # prevent object not found errors
-        memdb = sqlite3.connect(':memory:')
-        cur = memdb.cursor()
-        cur.execute('CREATE TABLE gitrev (githash TEXT PRIMARY KEY)')
-        git = subprocess.Popen((GIT, 'log', '--all', '--reflog', '--pretty=%H'),
-                               stdout=subprocess.PIPE, cwd=gitpath)
-        for ln in git.stdout:
-            cur.execute('INSERT OR IGNORE INTO gitrev VALUES (?)',
-                        (ln.decode('utf-8').strip(),))
-        git.wait()
-        memdb.commit()
-        cur.execute('ATTACH ? AS marks', (marksdbname,))
-        with open(gitmarks, 'w') as f:
-            for row in cur.execute(
-                'SELECT name, githash FROM marks.marks m '
-                'INNER JOIN gitrev g USING (githash)'):
-                f.write(' '.join(row) + '\n')
-        memdb.close()
     git = subprocess.Popen(
         (GIT, 'fast-export', '--all', '--signed-tags=strip',
         '--import-marks=' + gitmarks, '--export-marks=' + gitmarks),
