@@ -50,8 +50,6 @@ class Package:
         self.release = None
         self.epoch = None
         self.description = None
-        self.commit_time = None
-        self.committer = None
         self.spec = collections.OrderedDict()
         self.dependencies = []
         self.fn_spec = None
@@ -113,8 +111,6 @@ class PackageGroup(Package):
         self.version = None
         self.release = None
         self.directory = directory
-        self.commit_time = None
-        self.committer = None
         self.spec = collections.OrderedDict()
         self.fn_spec = None
         self.err_spec = None
@@ -131,8 +127,6 @@ class PackageGroup(Package):
 
     def package(self, defines_fp, defines_filename=None, defines_fileid=None):
         cls = Package(self.tree, self.secpath, self.directory, self.name)
-        cls.commit_time = self.commit_time
-        cls.committer = self.committer
         cls.spec = self.spec.copy()
         cls.version = self.version
         cls.release = self.release
@@ -142,6 +136,8 @@ class PackageGroup(Package):
         return cls
 
 def parse_commit_msg(name, text):
+    if text is None:
+        return
     if text.startswith('Merge branch '):
         return
     match = re_commitrevert.match(text)
@@ -182,11 +178,11 @@ class SourceRepo:
         # db for syncing among Fossil, Git and Abbs-meta database
         self.marksdbfile = os.path.join(markpath, name + '-marks.db')
         self.marksdb = sqlite3.connect(self.marksdbfile)
-        self.committers = {}
         self.db.row_factory = self.marksdb.row_factory = sqlite3.Row
         if not os.path.isfile(self.fossilpath):
             self.sync()
         self.fossil = fossil.Repo(self.fossilpath)
+        self._cache_branch = fossil.LRUCache(16)
         self._cache_flist = fossil.LRUCache(16)
 
     def __repr__(self):
@@ -288,6 +284,8 @@ class SourceRepo:
                     "INNER JOIN trees t ON t.name=p.tree "
                     "LEFT JOIN package_versions pv "
                     "  ON pv.package=p.name AND pv.branch=t.mainbranch")
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_packages_directory'
+                    ' ON packages (directory)')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_package_dependencies_rev'
                     ' ON package_dependencies (dependency)')
         cur.execute('CREATE VIRTUAL TABLE IF NOT EXISTS fts_packages'
@@ -319,9 +317,6 @@ class SourceRepo:
     def sync(self):
         reposync.sync(self.gitpath, self.fossilpath, self.markpath,
                       trackbranches=self.branches)
-        mcur = self.marksdb.cursor()
-        for email, name in mcur.execute('SELECT email, name FROM committers'):
-            self.committers[email] = name
 
     def file_list(self, mid):
         if mid in self._cache_flist:
@@ -366,18 +361,6 @@ class SourceRepo:
                 ret.append(FileChange('+', fn, fid, mperm == 2))
         return ret
 
-    def file_commit_stat(self, mid, path):
-        mtime, email = self.fossil.execute(
-            'SELECT '
-            '  CAST(round((mtime-2440587.5)*86400) AS INTEGER) mtimeunix, user '
-            'FROM event '
-            'LEFT JOIN mlink ON mlink.mid = event.objid '
-            'WHERE mlink.fid = (SELECT rid FROM blob WHERE uuid = ?) '
-            'ORDER BY mtime ASC '
-            'LIMIT 1', (self.file_list(mid)[path][0],)).fetchone()
-        uname = self.committers.get(email, '')
-        return mtime, '%s <%s>' % (uname, email)
-
     def exists(self, mid, path, isdir=False, ignorelink=False):
         for fn, v in self.file_list(mid).items():
             if fn == path:
@@ -390,12 +373,16 @@ class SourceRepo:
         return False
 
     def branches_of_commit(self, mid):
+        if mid in self._cache_branch:
+            return self._cache_branch[mid]
         mcur = self.marksdb.cursor()
         results = frozenset(x[0] for x in mcur.execute(
             "SELECT tagname FROM branches WHERE rid=?", (mid,)).fetchall())
         if not self.branches:
-            return list(results)
-        branches = [b for b in self.branches if b in results]
+            branches = list(results)
+        else:
+            branches = [b for b in self.branches if b in results]
+        self._cache_branch[mid] = branches
         return branches
 
     def list_update(self, mid, full=False):
@@ -426,8 +413,6 @@ class SourceRepo:
         specfn = os.path.join(repopath, 'spec')
         uuid, specstr = self.getfile(mid, specfn, True)
         pkggroup.load_spec(specstr, specfn, uuid[:16])
-        pkggroup.commit_time, pkggroup.committer = self.file_commit_stat(
-            mid, os.path.join(repopath, 'spec'))
         for path, fattr in filelist.items():
             if path.startswith(repopath + '/'):
                 dirpath, filename = os.path.split(path)
@@ -496,34 +481,37 @@ class SourceRepo:
                 'UPDATE fts_packages SET description=? WHERE name=?',
                 (pkg.description, pkg.name)
             )
-        for branch in self.branches_of_commit(mid):
-            cur.execute(
-                'REPLACE INTO package_versions VALUES (?,?,?,?,?,?,?,?)',
-                (pkg.name, branch, pkg.version, pkg.release,
-                pkg.epoch, pkg.commit_time, pkg.committer, githash)
-            )
-            if branch == self.mainbranch:
-                cur.execute('DELETE FROM package_spec WHERE package = ?', (pkg.name,))
-                for k, v in pkg.spec.items():
-                    cur.execute('REPLACE INTO package_spec VALUES (?,?,?)',
-                                (pkg.name, k, v))
-                cur.execute('DELETE FROM package_dependencies WHERE package = ?',
-                            (pkg.name,))
-                cur.executemany(
-                    'REPLACE INTO package_dependencies VALUES (?,?,?,?,?)',
-                    pkg.dependencies)
+        mcur = self.marksdb.cursor()
+        result = mcur.execute("SELECT 1 FROM branches WHERE rid=? AND tagname=?",
+            (mid, self.mainbranch)).fetchone()
+        mcur.close()
+        if result:
+            cur.execute('DELETE FROM package_spec WHERE package = ?', (pkg.name,))
+            for k, v in pkg.spec.items():
+                cur.execute('REPLACE INTO package_spec VALUES (?,?,?)',
+                            (pkg.name, k, v))
+            cur.execute('DELETE FROM package_dependencies WHERE package = ?',
+                        (pkg.name,))
+            cur.executemany(
+                'REPLACE INTO package_dependencies VALUES (?,?,?,?,?)',
+                pkg.dependencies)
         logging.debug('add: ' + pkg.name)
 
     def scan_abbs_tree(self, mid):
         cur = self.db.cursor()
         mcur = self.marksdb.cursor()
-        exist = mcur.execute(
-            'SELECT 1 FROM package_rel WHERE rid = ?', (mid,)).fetchone()
+        githash, exist = mcur.execute(
+            "SELECT m.githash, r.rid FROM marks m "
+            "LEFT JOIN package_rel r USING (rid) "
+            "WHERE rid = ?", (mid,)).fetchone()
         if exist:
             return
-        githash = mcur.execute(
-            "SELECT githash FROM marks WHERE rid = ?", (mid,)).fetchone()[0]
+        commitmsg = self.fossil.execute(
+            'SELECT comment FROM event WHERE objid=?', (mid,)).fetchone()
+        if commitmsg:
+            commitmsg = commitmsg[0]
         for pkggroup, change in self.list_update(mid):
+            removedpkgs = []
             for row in cur.execute(
                 'SELECT name FROM packages p '
                 'WHERE category IS ? AND section=? AND directory=? AND tree=?',
@@ -552,6 +540,8 @@ class SourceRepo:
                         logging.info('removed: ' + name)
                     else:
                         logging.debug('rm+: ' + name)
+                if change == '-':
+                    removedpkgs.append(name)
             cur.execute(
                 'DELETE FROM package_duplicate '
                 'WHERE category=? AND section=? AND directory=? AND tree=?',
@@ -561,9 +551,7 @@ class SourceRepo:
             if change == '+':
                 for pkg in self.read_package_info(mid, pkggroup):
                     self.update_package(mid, githash, pkg)
-                    cmsg = self.fossil.execute(
-                        'SELECT comment FROM event WHERE objid=?', (mid,)).fetchone()
-                    cmsg = parse_commit_msg(pkg.name, cmsg[0]) if cmsg else None
+                    cmsg = parse_commit_msg(pkg.name, commitmsg)
                     if not cmsg:
                         continue
                     mcur.execute(
@@ -583,6 +571,13 @@ class SourceRepo:
                         (mid, pkggroup.fn_spec, pkggroup.category or '',
                         pkggroup.section, pkggroup.directory, None,
                         pkggroup.err_spec)
+                    )
+            else:
+                for name in removedpkgs:
+                    cmsg = parse_commit_msg(name, commitmsg)
+                    mcur.execute(
+                        'REPLACE INTO package_rel VALUES (?,?,?,?,?,?)',
+                        (mid, name, None, None, None, cmsg)
                     )
         # make up for the deleted duplicate
         for secpath, directory in cur.execute(
@@ -625,6 +620,40 @@ class SourceRepo:
                 continue
             logging.info('%s: %d %s', time.strftime('%Y-%m-%d', time.gmtime(mtime)), mid, uuid[:16])
             self.scan_abbs_tree(mid)
+        mcur.execute('PRAGMA optimize')
+        mcur.close()
+        self.marksdb.commit()
+        self.marksdb.close()
+        cur.execute("ATTACH ? AS marks", (self.marksdbfile,))
+        cur.execute("ATTACH ? AS fossil", (self.fossilpath,))
+        cur.execute('''
+            CREATE TEMP TABLE t_package_versions AS
+            SELECT pr.package, b.tagname branch, pr.version, pr.release, pr.epoch,
+              CAST(round((max(e.mtime)-2440587.5)*86400) AS INTEGER) commit_time,
+              c.name || ' <' || c.email || '>' committer, m.githash
+            FROM marks.package_rel pr
+            INNER JOIN marks.marks m USING (rid)
+            INNER JOIN marks.branches b USING (rid)
+            INNER JOIN main.tree_branches mb ON mb.branch=b.tagname
+            INNER JOIN fossil.event e ON e.objid=pr.rid
+            INNER JOIN marks.committers c ON e.user=c.email
+            WHERE mb.tree=?
+            GROUP BY pr.package, b.tagname
+            ORDER BY commit_time, pr.package
+        ''', (self.name,))
+        cur.execute('DELETE FROM t_package_versions WHERE version IS NULL')
+        cur.execute('''
+            REPLACE INTO package_versions
+            SELECT t.* FROM t_package_versions t
+            LEFT JOIN package_versions v ON t.package=v.package
+            AND t.branch=v.branch AND t.version IS v.version
+            AND t.release IS v.release AND t.epoch IS v.epoch
+            AND t.commit_time IS v.commit_time AND t.githash IS v.githash
+            WHERE v.package IS NULL
+        ''')
+        cur.execute('DROP TABLE t_package_versions')
+        self.db.execute('PRAGMA optimize')
+        self.db.commit()
         logging.info('Done.')
 
     def reset_progress(self):
@@ -643,11 +672,10 @@ class SourceRepo:
         self.marksdb.commit()
 
     def close(self):
-        logging.info('Committing...')
-        self.db.execute('PRAGMA optimize')
-        self.marksdb.execute('PRAGMA optimize')
-        self.db.commit()
-        self.marksdb.commit()
+        if self.db.in_transaction:
+            logging.info('Committing...')
+            self.db.commit()
+        self.db.close()
 
 def main():
     parser = argparse.ArgumentParser(description="Generate metadata database for abbs trees.")
