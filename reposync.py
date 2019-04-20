@@ -83,7 +83,6 @@ def store_branches(db, fossilpath, trackbranches=None):
         'rid INTEGER, tagid INTEGER, tagname TEXT, '
         'PRIMARY KEY (rid, tagid)'
     ')')
-    db.commit()
     cur.execute('ATTACH DATABASE ? AS fossil', (fossilpath,))
     if trackbranches:
         vals = ['sym-' + b for b in trackbranches]*2
@@ -92,6 +91,7 @@ def store_branches(db, fossilpath, trackbranches=None):
         cur.execute(sql, vals)
     else:
         cur.execute(sql % (("tag.tagname LIKE 'sym-%%'",)*2))
+    db.commit()
 
 def sync(gitpath, fossilpath, markpath, rebuild=False, trackbranches=None):
     committers = collections.defaultdict(collections.Counter)
@@ -139,6 +139,7 @@ def sync(gitpath, fossilpath, markpath, rebuild=False, trackbranches=None):
     if newfossil:
         cur.execute('VACUUM')
     marksdb.commit()
+    marksdb.close()
 
 if __name__ == '__main__':
     sync(*sys.argv[1:])
