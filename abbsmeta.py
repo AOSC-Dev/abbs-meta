@@ -93,10 +93,10 @@ class Package:
             for pkgname in self.spec.pop(rel, '').split():
                 match = re_packagerel.match(pkgname)
                 if not match:
-                    depwarn = 'invalid dependency definition in %s/%s: "%s"' % (
-                        name, rel, pkgname)
-                    logging.warning(depwarn)
-                    relerrs.append('%s: %s' % (rel, depwarn))
+                    logging.warning('invalid dependency definition in %s/%s: "%s"' % (
+                        name, rel, pkgname))
+                    relerrs.append('%s: invalid dependency definition in "%s"' % (
+                        rel, pkgname))
                     continue
                 deppkg, relop, depver = match.groups()
                 dependencies.append((name, deppkg, relop, depver or None, rel))
@@ -653,15 +653,6 @@ class SourceRepo:
         cur.execute('DELETE FROM t_package_versions WHERE version IS NULL')
         cur.execute('CREATE INDEX idx_t_package_versions '
             'ON t_package_versions (package)')
-        #deleted = cur.execute('''
-            #SELECT v.package, v.branch FROM package_versions v
-            #INNER JOIN packages p ON p.name=v.package
-            #LEFT JOIN t_package_versions t
-            #ON t.package=v.package AND t.branch=v.branch
-            #WHERE p.tree=? AND t.package IS NULL
-        #''', (self.name,)).fetchall()
-        #cur.executemany(
-            #'DELETE FROM package_versions WHERE package=? AND branch=?', deleted)
         cur.execute('''
             REPLACE INTO package_versions
             SELECT t.* FROM t_package_versions t
