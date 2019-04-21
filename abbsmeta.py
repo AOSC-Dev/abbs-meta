@@ -486,20 +486,22 @@ class SourceRepo:
                 'UPDATE fts_packages SET description=? WHERE name=?',
                 (pkg.description, pkg.name)
             )
-        mcur = self.marksdb.cursor()
-        result = mcur.execute("SELECT 1 FROM branches WHERE rid=? AND tagname=?",
-            (mid, self.mainbranch)).fetchone()
-        mcur.close()
-        if result:
-            cur.execute('DELETE FROM package_spec WHERE package = ?', (pkg.name,))
-            for k, v in pkg.spec.items():
-                cur.execute('REPLACE INTO package_spec VALUES (?,?,?)',
-                            (pkg.name, k, v))
-            cur.execute('DELETE FROM package_dependencies WHERE package = ?',
-                        (pkg.name,))
-            cur.executemany(
-                'REPLACE INTO package_dependencies VALUES (?,?,?,?,?)',
-                pkg.dependencies)
+        for branch in self.branches_of_commit(mid):
+            cur.execute(
+                'REPLACE INTO package_versions VALUES (?,?,?,?,?,?,?,?)',
+                (pkg.name, branch, pkg.version, pkg.release,
+                pkg.epoch, None, None, None)
+            )
+            if branch == self.mainbranch:
+                cur.execute('DELETE FROM package_spec WHERE package = ?', (pkg.name,))
+                for k, v in pkg.spec.items():
+                    cur.execute('REPLACE INTO package_spec VALUES (?,?,?)',
+                                (pkg.name, k, v))
+                cur.execute('DELETE FROM package_dependencies WHERE package = ?',
+                            (pkg.name,))
+                cur.executemany(
+                    'REPLACE INTO package_dependencies VALUES (?,?,?,?,?)',
+                    pkg.dependencies)
         logging.debug('add: ' + pkg.name)
 
     def scan_abbs_tree(self, mid):
@@ -516,6 +518,37 @@ class SourceRepo:
         if commitmsg:
             commitmsg = commitmsg[0]
         for pkggroup, change in self.list_update(mid):
+            removedpkgs = []
+            for row in cur.execute(
+                'SELECT name FROM packages p '
+                'WHERE category IS ? AND section=? AND directory=? AND tree=?',
+                (pkggroup.category, pkggroup.section, pkggroup.directory,
+                self.name)).fetchall():
+                name = row[0]
+                for branch in self.branches_of_commit(mid):
+                    cur.execute('DELETE FROM package_versions WHERE '
+                                'package=? AND branch=?', (name, branch))
+                if not cur.execute(
+                    'SELECT 1 FROM package_versions WHERE package=?',
+                    (name,)).fetchone():
+                    cur.execute('DELETE FROM package_duplicate '
+                                'WHERE package=? AND tree=? AND category=? '
+                                ' AND section=? AND directory=?',
+                                (name, self.name, pkggroup.category or '',
+                                pkggroup.section, pkggroup.directory))
+                    cur.execute('DELETE FROM package_spec WHERE package=?',
+                                (name,))
+                    cur.execute('DELETE FROM package_dependencies WHERE package=?',
+                                (name,))
+                    cur.execute('DELETE FROM packages WHERE name=?', (name,))
+                    cur.execute('DELETE FROM fts_packages WHERE name=?',
+                                (name,))
+                    if change == '-':
+                        logging.info('removed: ' + name)
+                    else:
+                        logging.debug('rm+: ' + name)
+                if change == '-':
+                    removedpkgs.append(name)
             cur.execute(
                 'DELETE FROM package_duplicate '
                 'WHERE category=? AND section=? AND directory=? AND tree=?',
@@ -547,17 +580,30 @@ class SourceRepo:
                         pkggroup.err_spec)
                     )
             else:
-                for name in map(lambda x: x[0], cur.execute(
-                    'SELECT name FROM packages p '
-                    'WHERE category IS ? AND section=? AND directory=? AND tree=?',
-                    (pkggroup.category, pkggroup.section, pkggroup.directory,
-                    self.name)).fetchall()):
+                for name in removedpkgs:
                     cmsg = parse_commit_msg(name, commitmsg)
                     mcur.execute(
                         'REPLACE INTO package_rel VALUES (?,?,?,?,?,?)',
                         (mid, name, None, None, None, cmsg)
                     )
-                    logging.info('removed: ' + name)
+        # make up for the deleted duplicate
+        for secpath, directory in cur.execute(
+            "SELECT "
+            " CASE WHEN category='' THEN section "
+            " ELSE category || '-' || section END, directory "
+            "FROM package_duplicate "
+            "WHERE package NOT IN (SELECT name FROM packages) AND tree=?",
+            (self.name,)).fetchall():
+            if not self.exists(mid, os.path.join(secpath, directory, 'spec'), True):
+                continue
+            pkggroup = PackageGroup(self.name, secpath, directory)
+            for pkg in self.read_package_info(mid, pkggroup):
+                self.update_package(mid, pkg)
+        cur.execute(
+            'DELETE FROM package_duplicate WHERE package IN '
+            '(SELECT package FROM package_duplicate '
+            ' GROUP BY package HAVING count(package) = 1)'
+        )
 
     def repo_update(self):
         cur = self.db.cursor()
@@ -585,7 +631,7 @@ class SourceRepo:
         mcur.close()
         self.marksdb.commit()
         self.marksdb.close()
-        logging.info('Garbage collecting...')
+        logging.info('Updating branches...')
         cur.execute("ATTACH ? AS marks", (self.marksdbfile,))
         cur.execute("ATTACH ? AS fossil", (self.fossilpath,))
         cur.execute('PRAGMA temp_store=MEMORY')
@@ -607,15 +653,15 @@ class SourceRepo:
         cur.execute('DELETE FROM t_package_versions WHERE version IS NULL')
         cur.execute('CREATE INDEX idx_t_package_versions '
             'ON t_package_versions (package)')
-        deleted = cur.execute('''
-            SELECT v.package, v.branch FROM package_versions v
-            INNER JOIN packages p ON p.name=v.package
-            LEFT JOIN t_package_versions t
-            ON t.package=v.package AND t.branch=v.branch
-            WHERE p.tree=? AND t.package IS NULL
-        ''', (self.name,)).fetchall()
-        cur.executemany(
-            'DELETE FROM package_versions WHERE package=? AND branch=?', deleted)
+        #deleted = cur.execute('''
+            #SELECT v.package, v.branch FROM package_versions v
+            #INNER JOIN packages p ON p.name=v.package
+            #LEFT JOIN t_package_versions t
+            #ON t.package=v.package AND t.branch=v.branch
+            #WHERE p.tree=? AND t.package IS NULL
+        #''', (self.name,)).fetchall()
+        #cur.executemany(
+            #'DELETE FROM package_versions WHERE package=? AND branch=?', deleted)
         cur.execute('''
             REPLACE INTO package_versions
             SELECT t.* FROM t_package_versions t
@@ -625,35 +671,7 @@ class SourceRepo:
             AND t.commit_time IS v.commit_time AND t.githash IS v.githash
             WHERE v.package IS NULL
         ''')
-        for name in map(lambda x: x[0], cur.execute(
-            'SELECT p.name FROM packages p '
-            'LEFT JOIN t_package_versions v ON p.name=v.package '
-            'WHERE p.tree=? AND v.package IS NULL', (self.name,)).fetchall()):
-            cur.execute('DELETE FROM package_duplicate '
-                        'WHERE package=? AND tree=?', (name, self.name))
-            cur.execute('DELETE FROM package_spec WHERE package=?', (name,))
-            cur.execute('DELETE FROM package_dependencies WHERE package=?', (name,))
-            cur.execute('DELETE FROM packages WHERE name=?', (name,))
-            cur.execute('DELETE FROM fts_packages WHERE name=?', (name,))
-        cur.execute(
-            'DELETE FROM package_duplicate WHERE package IN '
-            '(SELECT package FROM package_duplicate '
-            ' GROUP BY package HAVING count(package) = 1)'
-        )
         cur.execute('DROP TABLE t_package_versions')
-        # make up for the deleted duplicate
-        for secpath, directory in cur.execute(
-            "SELECT "
-            " CASE WHEN category='' THEN section "
-            " ELSE category || '-' || section END, directory "
-            "FROM package_duplicate "
-            "WHERE package NOT IN (SELECT name FROM packages) AND tree=?",
-            (self.name,)).fetchall():
-            if not self.exists(mid, os.path.join(secpath, directory, 'spec'), True):
-                continue
-            pkggroup = PackageGroup(self.name, secpath, directory)
-            for pkg in self.read_package_info(mid, pkggroup):
-                self.update_package(mid, pkg)
         self.db.execute('PRAGMA optimize')
         self.db.commit()
         logging.info('Done.')
