@@ -26,13 +26,19 @@ def download_and_hash(url, hashname='sha256'):
             h.update(chunk)
     return h.hexdigest()
 
-def make_diff(filename, spec, olddate, chksum):
+def make_diff(filename, spec, olddate, chksum, replace=False):
     oldspec = spec.splitlines(True)
-    lines = list(reversed(oldspec))
-    for i, ln in enumerate(lines.copy()):
-        if ln.startswith('SRCTBL'):
-            lines.insert(i, 'CHKSUM="sha256::%s"\n' % chksum)
-    lines.reverse()
+    lines = []
+    for ln in oldspec:
+        if replace:
+            if ln.startswith('CHKSUM'):
+                lines.append('CHKSUM="sha256::%s"\n' % chksum)
+                continue
+        elif ln.startswith('SRCTBL'):
+            lines.append(ln)
+            lines.append('CHKSUM="sha256::%s"\n' % chksum)
+            continue
+        lines.append(ln)
     return ''.join(difflib.unified_diff(oldspec, lines, filename, filename, iso_8601(olddate), iso_8601()))
 
 def main():
@@ -46,18 +52,21 @@ def main():
     srctbl = specvars['SRCTBL']
     if 'CHKSUM' in specvars:
         oldchksum = specvars['CHKSUM'].lower().split('::', 1)
-        newsum = download_and_hash(srctbl, oldchksum[0])
-        if newsum == oldchksum[1]:
-            return 0
-        else:
-            print("%s: existing CHKSUM mismatch" % fname, file=sys.stderr)
-            return 2
-    newsum1 = download_and_hash(srctbl)
-    newsum2 = download_and_hash(srctbl)
+        hashtype = oldchksum[0]
+    else:
+        hashtype = 'sha256'
+    newsum1 = download_and_hash(srctbl, hashtype)
+    newsum2 = download_and_hash(srctbl, hashtype)
+    replace = False
     if newsum1 != newsum2:
         print("%s: two sha256sum's mismatch" % fname, file=sys.stderr)
         return 1
-    sys.stdout.write(make_diff(fname, spec, specdate, newsum1))
+    elif newsum1 == oldchksum[1]:
+        return 0
+    else:
+        print("%s: existing CHKSUM mismatch" % fname, file=sys.stderr)
+        replace = True
+    sys.stdout.write(make_diff(fname, spec, specdate, newsum1, replace))
     return 0
 
 if __name__ == '__main__':
