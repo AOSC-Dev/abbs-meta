@@ -54,15 +54,30 @@ def store_committers(db, committers):
         )
     db.commit()
 
-def store_branches(db, fossilpath, trackbranches=None):
+def store_branches(db, gitpath, fossilpath, trackbranches=None):
     cur = db.cursor()
     cur.execute('PRAGMA case_sensitive_like=1')
+    cur.execute('CREATE TABLE IF NOT EXISTS git_refs ('
+        'ref TEXT PRIMARY KEY, githash TEXT '
+    ')')
+    git = subprocess.Popen(
+        (GIT, 'for-each-ref', '--format=%(objectname)\t%(refname)'),
+        stdout=subprocess.PIPE, cwd=gitpath)
+    for ln in git.stdout:
+        githash, ref = ln.decode().rstrip().split('\t', 1)
+        if ref.startswith('refs/heads/'):
+            tag = ref[11:]
+        else:
+            tag = ref[5:].split('/', 1)[1]
+        cur.execute("REPLACE INTO git_refs VALUES (?,?)", (tag, githash))
     sql = (
         # find branch ancestors and tag them with all child branches
         "WITH RECURSIVE t(rid, tagid) AS ("
-            "SELECT leaf.rid, tagxref.tagid FROM leaf "
-            "LEFT JOIN tagxref ON tagxref.rid=leaf.rid "
-            "LEFT JOIN tag ON tag.tagid=tagxref.tagid "
+            "SELECT tagxref.rid, tagxref.tagid "
+            "FROM main.git_refs gr "
+            "INNER JOIN main.marks m USING (githash) "
+            "INNER JOIN tag ON tag.tagname=('sym-' || gr.ref) "
+            "INNER JOIN tagxref ON tagxref.rid=m.rid "
             "WHERE tagxref.tagtype=2 AND %s "
             "UNION "
             "SELECT plink.pid, t.tagid FROM t "
@@ -133,7 +148,7 @@ def sync(gitpath, fossilpath, markpath, rebuild=False, trackbranches=None):
     marksdb = sqlite3.connect(marksdbname)
     store_marks(marksdb, gitmarks, fossilmarks)
     store_committers(marksdb, committers)
-    store_branches(marksdb, fossilpath, trackbranches)
+    store_branches(marksdb, gitpath, fossilpath, trackbranches)
     cur = marksdb.cursor()
     cur.execute('PRAGMA optimize')
     if newfossil:
