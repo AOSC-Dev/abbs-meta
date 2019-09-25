@@ -89,7 +89,7 @@ class Package:
         dependencies = []
         relerrs = [self.err_defines] if self.err_defines else []
         for rel in ('PKGDEP', 'PKGRECOM', 'PKGBREAK', 'PKGCONFL', 'PKGREP',
-                    'BUILDDEP', 'PKGDEP_DPKG', 'PKGDEP_RPM'):
+                    'PKGPROV', 'PKGSUG', 'BUILDDEP', 'PKGDEP_DPKG', 'PKGDEP_RPM'):
             for pkgname in self.spec.pop(rel, '').split():
                 match = re_packagerel.match(pkgname)
                 if not match:
@@ -267,7 +267,8 @@ class SourceRepo:
                     'dependency TEXT,'
                     'relop TEXT,'
                     'version TEXT,'
-                    # PKGDEP, PKGRECOM, PKGBREAK, PKGCONFL, PKGREP, BUILDDEP
+                    # PKGDEP, PKGRECOM, PKGBREAK, PKGCONFL, PKGREP,
+                    # PKGPROV, PKGSUG, BUILDDEP
                     'relationship TEXT,'
                     'PRIMARY KEY (package, dependency, relationship),'
                     'FOREIGN KEY(package) REFERENCES packages(name)'
