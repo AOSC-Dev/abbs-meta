@@ -27,7 +27,11 @@ repo_ignore = frozenset((
     '.git', '.githubwiki', '.abbs-repo', 'repo-spec',
     'groups', 'newpak', 'assets'
 ))
+relvars = ('PKGDEP', 'PKGRECOM', 'PKGBREAK', 'PKGCONFL', 'PKGREP',
+           'PKGPROV', 'PKGSUG', 'BUILDDEP', 'PKGDEP_DPKG', 'PKGDEP_RPM')
+re_relvars = re.compile(r'^(%s)(__\w+)?$' % '|'.join(relvars), re.ASCII)
 
+Version = collections.namedtuple('Version', ('version', 'release', 'epoch'))
 FileChange = collections.namedtuple('FileChange', 'status name rid islink')
 
 def uniq(seq):  # Dave Kirby
@@ -49,6 +53,8 @@ class Package:
         self.version = None
         self.release = None
         self.epoch = None
+        self.vermask_arch = collections.defaultdict(
+            lambda: Version(None, None, None))
         self.description = None
         self.spec = collections.OrderedDict()
         self.dependencies = []
@@ -71,8 +77,19 @@ class Package:
         self.fn_spec = filename
         result, self.err_spec = bashvar.read_bashvar(fp, fileid, True)
         self.spec.update(result)
-        self.version = self.spec.pop('VER', None)
-        self.release = self.spec.pop('REL', None)
+        for key in tuple(self.spec.keys()):
+            if key == 'VER':
+                self.version = self.spec.pop(key)
+            elif key == 'REL':
+                self.release = self.spec.pop(key)
+            elif key.startswith('VER__'):
+                arch = key[5:].lower()
+                self.vermask_arch[arch] = self.vermask_arch[arch]._replace(
+                    version=self.spec.pop(key))
+            elif key.startswith('REL__'):
+                arch = key[5:].lower()
+                self.vermask_arch[arch] = self.vermask_arch[arch]._replace(
+                    release=self.spec.pop(key))
 
     def load_defines(self, fp, filename=None, fileid=None):
         self.fn_defines = filename
@@ -83,14 +100,26 @@ class Package:
             # we assume it is a define for some specific architecture
             return
         self.name = name
-        self.pkg_section = self.spec.pop('PKGSEC', None)
-        self.description = self.spec.pop('PKGDES', None)
-        self.epoch = self.spec.pop('PKGEPOCH', None)
+        for key in tuple(self.spec.keys()):
+            if key == 'PKGSEC':
+                self.pkg_section = self.spec.pop(key)
+            elif key == 'PKGDES':
+                self.description = self.spec.pop(key)
+            elif key == 'PKGEPOCH':
+                self.epoch = self.spec.pop(key)
+            elif key.startswith('PKGEPOCH__'):
+                arch = key[10:].lower()
+                self.vermask_arch[arch] = self.vermask_arch[arch]._replace(
+                    epoch=self.spec.pop(key))
         dependencies = []
         relerrs = [self.err_defines] if self.err_defines else []
-        for rel in ('PKGDEP', 'PKGRECOM', 'PKGBREAK', 'PKGCONFL', 'PKGREP',
-                    'PKGPROV', 'PKGSUG', 'BUILDDEP', 'PKGDEP_DPKG', 'PKGDEP_RPM'):
-            for pkgname in self.spec.pop(rel, '').split():
+        for k, relvalue in tuple(self.spec.items()):
+            if not re_relvars.match(k):
+                continue
+            relsp = k.rsplit('__', 1)
+            rel = relsp[0]
+            arch = '' if len(relsp) == 1 else relsp[1].lower()
+            for pkgname in relvalue.split():
                 match = re_packagerel.match(pkgname)
                 if not match:
                     logging.warning('invalid dependency definition in %s/%s: "%s"' % (
@@ -99,7 +128,8 @@ class Package:
                         rel, pkgname))
                     continue
                 deppkg, relop, depver = match.groups()
-                dependencies.append((name, deppkg, relop, depver or None, rel))
+                dependencies.append((name, deppkg, relop, depver or None, arch, rel))
+            del self.spec[k]
         self.dependencies = uniq(dependencies)
         if relerrs:
             self.err_defines = '\n'.join(relerrs)
@@ -115,6 +145,8 @@ class PackageGroup(Package):
             self.category, self.section = None, secpath
         self.version = None
         self.release = None
+        self.vermask_arch = collections.defaultdict(
+            lambda: Version(None, None, None))
         self.directory = directory
         self.spec = collections.OrderedDict()
         self.fn_spec = None
@@ -135,6 +167,7 @@ class PackageGroup(Package):
         cls.spec = self.spec.copy()
         cls.version = self.version
         cls.release = self.release
+        cls.vermask_arch = self.vermask_arch.copy()
         cls.fn_spec = self.fn_spec
         cls.err_spec = self.err_spec
         cls.load_defines(defines_fp, defines_filename, defines_fileid)
@@ -247,13 +280,14 @@ class SourceRepo:
         cur.execute('CREATE TABLE IF NOT EXISTS package_versions ('
                     'package TEXT,'  # coreutils
                     'branch TEXT,'   # abbs tree branch
+                    'architecture TEXT,'   # abbs tree branch
                     'version TEXT,'  # 8.25
                     'release TEXT,'  # -1
                     'epoch TEXT,'    # 1:
                     'commit_time INTEGER,'
                     'committer TEXT,'
                     'githash TEXT,'
-                    'PRIMARY KEY (package, branch)'
+                    'PRIMARY KEY (package, branch, architecture)'
                     ')')
         cur.execute('CREATE TABLE IF NOT EXISTS package_spec ('
                     'package TEXT,'
@@ -267,10 +301,11 @@ class SourceRepo:
                     'dependency TEXT,'
                     'relop TEXT,'
                     'version TEXT,'
+                    'architecture TEXT,'
                     # PKGDEP, PKGRECOM, PKGBREAK, PKGCONFL, PKGREP,
                     # PKGPROV, PKGSUG, BUILDDEP
                     'relationship TEXT,'
-                    'PRIMARY KEY (package, dependency, relationship),'
+                    'PRIMARY KEY (package, dependency, architecture, relationship),'
                     'FOREIGN KEY(package) REFERENCES packages(name)'
                     # we may have unmatched dependency package name
                     # 'FOREIGN KEY(dependency) REFERENCES packages(name)'
@@ -489,10 +524,17 @@ class SourceRepo:
             )
         for branch in self.branches_of_commit(mid):
             cur.execute(
-                'REPLACE INTO package_versions VALUES (?,?,?,?,?,?,?,?)',
-                (pkg.name, branch, pkg.version, pkg.release,
+                'REPLACE INTO package_versions VALUES (?,?,?,?,?,?,?,?,?)',
+                (pkg.name, branch, '', pkg.version, pkg.release,
                 pkg.epoch, None, None, None)
             )
+            for arch, mask in pkg.vermask_arch.items():
+                cur.execute(
+                    'REPLACE INTO package_versions VALUES (?,?,?,?,?,?,?,?,?)', (
+                    pkg.name, branch, arch,
+                    mask.version or pkg.version, mask.release or pkg.release,
+                    mask.epoch or pkg.epoch, None, None, None
+                ))
             if branch == self.mainbranch:
                 cur.execute('DELETE FROM package_spec WHERE package = ?', (pkg.name,))
                 for k, v in pkg.spec.items():
@@ -501,7 +543,7 @@ class SourceRepo:
                 cur.execute('DELETE FROM package_dependencies WHERE package = ?',
                             (pkg.name,))
                 cur.executemany(
-                    'REPLACE INTO package_dependencies VALUES (?,?,?,?,?)',
+                    'REPLACE INTO package_dependencies VALUES (?,?,?,?,?,?)',
                     pkg.dependencies)
         logging.debug('add: ' + pkg.name)
 
@@ -638,7 +680,9 @@ class SourceRepo:
         cur.execute('PRAGMA temp_store=MEMORY')
         cur.execute('''
             CREATE TEMP TABLE t_package_versions AS
-            SELECT pr.package, b.tagname branch, pr.version, pr.release, pr.epoch,
+            SELECT pr.package, b.tagname branch,
+              COALESCE(v.architecture, '') architecture,
+              pr.version, pr.release, pr.epoch,
               CAST(round((max(e.mtime)-2440587.5)*86400) AS INTEGER) commit_time,
               c.name || ' <' || c.email || '>' committer, m.githash
             FROM marks.package_rel pr
@@ -647,6 +691,8 @@ class SourceRepo:
             INNER JOIN main.tree_branches mb ON mb.branch=b.tagname
             INNER JOIN fossil.event e ON e.objid=pr.rid
             INNER JOIN marks.committers c ON e.user=c.email
+            LEFT JOIN package_versions v
+            ON pr.package=v.package AND b.tagname=v.branch
             WHERE mb.tree=?
             GROUP BY pr.package, b.tagname
             ORDER BY commit_time, pr.package
