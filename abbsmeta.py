@@ -14,8 +14,7 @@ import collections
 
 import bashvar
 
-logging.basicConfig(
-    format='%(asctime)s %(levelname).1s %(message)s', level=logging.INFO)
+logger = logging.getLogger('abbsmeta')
 
 re_variable = re.compile(b'^\\s*([a-zA-Z_][a-zA-Z0-9_]*)=')
 re_packagerel = re.compile(
@@ -122,7 +121,7 @@ class Package:
             for pkgname in relvalue.split():
                 match = re_packagerel.match(pkgname)
                 if not match:
-                    logging.warning('invalid dependency definition in %s/%s: "%s"' % (
+                    logger.warning('invalid dependency definition in %s/%s: "%s"' % (
                         name, rel, pkgname))
                     relerrs.append('%s: invalid dependency definition in "%s"' % (
                         rel, pkgname))
@@ -209,15 +208,15 @@ class LocalRepo:
 
     def update(self, reset=False):
         self.init_db()
-        logging.info('Update ' + self.name)
+        logger.info('Update ' + self.name)
         if reset:
             self.reset_progress()
         try:
             self.repo_update()
         except KeyboardInterrupt:
-            logging.error('Interrupted.')
+            logger.error('Interrupted.')
         except:
-            logging.exception('Error.')
+            logger.exception('Error.')
         self.close()
 
     def init_db_schema(self):
@@ -328,7 +327,7 @@ class LocalRepo:
         if not existing:
             pass
         elif existing[0] != self.name:
-            logging.warning(
+            logger.warning(
                 'duplicate package "%s" found in different trees '
                 '%s/%s-%s/%s and %s/%s-%s/%s', pkg.name,
                 existing[0], existing[1], existing[2], existing[3],
@@ -346,7 +345,7 @@ class LocalRepo:
             return
         elif ((pkg.category, pkg.section, pkg.directory) !=
               tuple(existing[1:])):
-            logging.warning(
+            logger.warning(
                 'duplicate package "%s" found in %s-%s/%s and %s-%s/%s',
                 pkg.name, existing[1], existing[2], existing[3],
                 pkg.category, pkg.section, pkg.directory
@@ -400,12 +399,12 @@ class LocalRepo:
                 cur.executemany(
                     'REPLACE INTO package_dependencies VALUES (?,?,?,?,?,?)',
                     pkg.dependencies)
-        logging.debug('add: ' + pkg.name)
+        logger.debug('add: ' + pkg.name)
 
     def read_package_info(self, pkggroup):
         results = []
         repopath = os.path.join(pkggroup.secpath, pkggroup.directory)
-        logging.debug('read %r', pkggroup)
+        logger.debug('read %r', pkggroup)
         specfn = os.path.join(repopath, 'spec')
         with open(os.path.join(self.path, specfn), 'r', encoding='utf-8') as f:
             pkggroup.load_spec(f, specfn)
@@ -464,9 +463,9 @@ class LocalRepo:
         """)
         for name, isdel in cur.execute("SELECT name, isdel FROM t_pkgrm"):
             if isdel:
-                logging.info('removed: ' + name)
+                logger.info('removed: ' + name)
             else:
-                logging.debug('rm+: ' + name)
+                logger.debug('rm+: ' + name)
         cur.execute('DELETE FROM package_duplicate '
                     'WHERE tree=? AND (category,section,directory) IN '
                     ' (SELECT category, section, directory FROM t_pkgrm)',
@@ -510,7 +509,7 @@ class LocalRepo:
 
     def repo_update(self):
         self.scan_abbs_tree()
-        logging.info('Done.')
+        logger.info('Done.')
 
     def reset_progress(self):
         cur = self.db.cursor()
@@ -523,7 +522,7 @@ class LocalRepo:
 
     def close(self):
         if self.db.in_transaction:
-            logging.info('Committing...')
+            logger.info('Committing...')
             self.db.commit()
         self.db.close()
 
@@ -571,18 +570,18 @@ class SourceRepo(LocalRepo):
 
     def update(self, sync=True, reset=False):
         self.init_db()
-        logging.info('Update ' + self.name)
+        logger.info('Update ' + self.name)
         if sync:
-            logging.info('Syncing...')
+            logger.info('Syncing...')
             self.sync()
         if reset:
             self.reset_progress()
         try:
             self.repo_update()
         except KeyboardInterrupt:
-            logging.error('Interrupted.')
+            logger.error('Interrupted.')
         except:
-            logging.exception('Error.')
+            logger.exception('Error.')
         self.close()
 
     def init_db(self):
@@ -706,7 +705,7 @@ class SourceRepo(LocalRepo):
     def read_package_info(self, mid, pkggroup):
         results = []
         repopath = posixpath.join(pkggroup.secpath, pkggroup.directory)
-        logging.debug('read %r', pkggroup)
+        logger.debug('read %r', pkggroup)
         filelist = self.file_list(mid)
         specfn = posixpath.join(repopath, 'spec')
         uuid, specstr = self.getfile(mid, specfn, True)
@@ -762,9 +761,9 @@ class SourceRepo(LocalRepo):
                     cur.execute('DELETE FROM fts_packages WHERE name=?',
                                 (name,))
                     if change == '-':
-                        logging.info('removed: ' + name)
+                        logger.info('removed: ' + name)
                     else:
-                        logging.debug('rm+: ' + name)
+                        logger.debug('rm+: ' + name)
                 if change == '-':
                     removedpkgs.append(name)
             cur.execute(
@@ -844,13 +843,13 @@ class SourceRepo(LocalRepo):
             (fossil.unix_to_julian(last_update), last_rid)).fetchall():
             if not self.branches_of_commit(mid):
                 continue
-            logging.info('%s: %d %s', time.strftime('%Y-%m-%d', time.gmtime(mtime)), mid, uuid[:16])
+            logger.info('%s: %d %s', time.strftime('%Y-%m-%d', time.gmtime(mtime)), mid, uuid[:16])
             self.scan_abbs_tree(mid)
         mcur.execute('PRAGMA optimize')
         mcur.close()
         self.marksdb.commit()
         self.marksdb.close()
-        logging.info('Updating branches...')
+        logger.info('Updating branches...')
         cur.execute("ATTACH ? AS marks", (self.marksdbfile,))
         cur.execute("ATTACH ? AS fossil", (self.fossilpath,))
         cur.execute('PRAGMA temp_store=MEMORY')
@@ -888,7 +887,7 @@ class SourceRepo(LocalRepo):
         cur.execute('DROP TABLE t_package_versions')
         self.db.execute('PRAGMA optimize')
         self.db.commit()
-        logging.info('Done.')
+        logger.info('Done.')
 
     def reset_progress(self):
         super().reset_progress()
@@ -917,8 +916,9 @@ def main():
     parser.add_argument("name", help="Repository / abbs tree name", nargs='?')
     args = parser.parse_args()
 
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+    logging.basicConfig(
+        format='%(asctime)s %(levelname).1s %(message)s',
+        level=(logging.DEBUG if args.verbose else logging.INFO))
 
     if args.local:
         repo = LocalRepo(
