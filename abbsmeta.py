@@ -12,9 +12,7 @@ import argparse
 import posixpath
 import collections
 
-import fossil
 import bashvar
-import reposync
 
 logging.basicConfig(
     format='%(asctime)s %(levelname).1s %(message)s', level=logging.INFO)
@@ -532,6 +530,9 @@ class LocalRepo:
 class SourceRepo(LocalRepo):
     def __init__(self, name, basepath, markpath, dbfile, mainbranch,
                  branches=None, category='base', url=None, priority=0):
+        import fossil
+        import reposync
+
         # tree name
         if '/' in name:
             raise ValueError("'/' not allowed in name. Use basepath to change directory")
