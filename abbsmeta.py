@@ -193,7 +193,7 @@ class LocalRepo:
         self.path = path
         self.dbfile = dbfile
         # tree name
-        self.name = name or os.path.basename(path.rstrip('/'))
+        self.name = name or os.path.basename(os.path.abspath(path.rstrip('/')))
         if '/' in self.name:
             raise ValueError("'/' not allowed in name. Use basepath to change directory")
         self.db = sqlite3.connect(dbfile)
