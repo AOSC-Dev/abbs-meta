@@ -161,6 +161,31 @@ e}"
 # ad
 # eb
 # c
+
+s16=4.2.5
+s17="http://download.kde.org/stable/krita/${s16:0:5}/krita-$s16.tar.gz"
+
+str0=01234567890abcdefgh
+s18=${str0/#012/_}
+# _34567890abcdefgh
+s19=${str0/#345/_}
+# 01234567890abcdefgh
+s20=${str0/%fgh/_}
+# 01234567890abcde_
+s21=${str0/%cde/_}
+# 01234567890abcdefgh
+s22=${str0#012}
+# 34567890abcdefgh
+s23=${str0##012}
+# 34567890abcdefgh
+s24=${str0#abc}
+# 01234567890abcdefgh
+s25=${str0%fgh}
+# 01234567890abcde
+s26=${str0%%fgh}
+# 01234567890abcde
+s27=${str0%abc}
+# 01234567890abcdefgh
 '''
         expected = collections.OrderedDict((
             ('PKGDES', 'SDL and OpenGL bindings for Erlang'),
@@ -185,7 +210,15 @@ e}"
             ('s4', '7890abcdef'), ('s5', 'bcdefgh'), ('s6', ''),
             ('s7', 'bc'), ('s8', 'bcdef'), ('s9', 'abcd/efg/eijk'),
             ('s10', 'abcd/efg/eijk'), ('s12', 'abcd/fg/eijk'),
-            ('s13', 'abcd/zfg/eijk'), ('s14', 'abcd/zfg/zijk'), ('s15', 'ad\neb\nc')
+            ('s13', 'abcd/zfg/eijk'), ('s14', 'abcd/zfg/zijk'),
+            ('s15', 'ad\neb\nc'), ('s16', '4.2.5'),
+            ('s17', 'http://download.kde.org/stable/krita/4.2.5/krita-4.2.5.tar.gz'),
+            ('str0', '01234567890abcdefgh'),
+            ('s18', '_34567890abcdefgh'), ('s19', '01234567890abcdefgh'),
+            ('s20', '01234567890abcde_'), ('s21', '01234567890abcdefgh'),
+            ('s22', '34567890abcdefgh'), ('s23', '34567890abcdefgh'),
+            ('s24', '01234567890abcdefgh'), ('s25', '01234567890abcde'),
+            ('s26', '01234567890abcde'), ('s27', '01234567890abcdefgh'),
         ))
         result = bashvar.eval_bashvar_literal(source)
         self.assertEqual(result, expected)
@@ -209,10 +242,6 @@ e}"
             'a=${!name[@]}',
             'a=${!name[*]}',
             'a=${#parameter}',
-            'a=${parameter#word}',
-            'a=${parameter##word}',
-            'a=${parameter%word}',
-            'a=${parameter%%word}',
             'a=${parameter^pattern}',
             'a=${parameter^^pattern}',
             'a=${parameter,pattern}',
@@ -233,9 +262,6 @@ e}"
             'a=${string/\/e/z}',
             'a=${string/e//z}',
             'a=${string/e/z/}',
-            'a=${string/#e/z}',
-            'a=${string/%e/z}',
-            'a=${string/%e/z}',
             'a=${@/e/z}',
             'a=${*/e/z}',
         )

@@ -27,15 +27,18 @@ expansion_param = pp.Group(
         pp.Literal('{').suppress() +
         varname +
         pp.Optional(
-            (pp.Literal(':').setResultsName("exptype") + (
+            (pp.Literal(':').setResultsName("exptype") + pp.Group(
                 pp.Word(pp.nums) |
                 (whitespace + pp.Combine('-' + pp.Word(pp.nums)))
                 ).setResultsName("offset") +
                 pp.Optional(pp.Literal(':') + integer.setResultsName("length")))
-            ^ ((pp.Literal('//') ^ pp.Literal('/')).setResultsName("exptype") +
+            ^ (pp.oneOf('/ // /# /%').setResultsName("exptype") +
                 pp.Optional(substsafe.setResultsName("pattern") +
                 pp.Optional(pp.Literal('/') +
                 pp.Optional(substsafe, '').setResultsName("string")))
+            )
+            ^ (pp.oneOf("# ## % %%").setResultsName("exptype") +
+                pp.Optional(substsafe.setResultsName("pattern"))
             )
         ) +
         pp.Literal('}').suppress()
@@ -105,7 +108,7 @@ def combine_value(tokens, variables):
                 pass
             elif exptype == ':':
                 if 'offset' in tokens:
-                    offset = int(tokens['offset'].strip())
+                    offset = int(tokens['offset'][0].strip())
                     if 'length' in tokens:
                         length = int(tokens['length'])
                         if length >= 0:
@@ -114,13 +117,26 @@ def combine_value(tokens, variables):
                             var = var[offset:length]
                     else:
                         var = var[offset:]
-            elif exptype in '//':
+            elif exptype[0] == '/':
                 pattern = tokens.get('pattern', '')
                 newstring = tokens.get('string', '')
                 if exptype == '/':
                     var = var.replace(pattern, newstring, 1)
-                else:
+                elif exptype == '//':
                     var = var.replace(pattern, newstring)
+                elif exptype == '/#':
+                    if var.startswith(pattern):
+                        var = newstring + var[len(pattern):]
+                elif var.endswith(pattern):  # /%
+                    var = var[:-len(pattern)] + newstring
+            elif exptype[0] == '#':
+                pattern = tokens.get('pattern', '')
+                if var.startswith(pattern):
+                    var = var[len(pattern):]
+            elif exptype[0] == '%':
+                pattern = tokens.get('pattern', '')
+                if var.endswith(pattern):
+                    var = var[:-len(pattern)]
             val += var
         else:
             warnings.warn('variable "%s" is undefined' % varname, VariableWarning)
