@@ -13,6 +13,12 @@ import posixpath
 import collections
 
 import bashvar
+try:
+    import fossil
+    import reposync
+except ImportError:
+    pass
+
 
 logger = logging.getLogger('abbsmeta')
 
@@ -529,9 +535,6 @@ class LocalRepo:
 class SourceRepo(LocalRepo):
     def __init__(self, name, basepath, markpath, dbfile, mainbranch,
                  branches=None, category='base', url=None, priority=0):
-        import fossil
-        import reposync
-
         # tree name
         if '/' in name:
             raise ValueError("'/' not allowed in name. Use basepath to change directory")

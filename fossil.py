@@ -7,7 +7,16 @@ import zlib
 import struct
 import sqlite3
 import calendar
+import warnings
 import collections
+
+__version__ = '0.3.1'
+
+try:
+    import numpy
+    NUMPY_AVAILABLE = True
+except ImportError:
+    NUMPY_AVAILABLE = False
 
 unsigned_to_signed = lambda v: v-0x100000000 if v & 0x80000000 else v
 utf8_decode = lambda b: b.decode('utf-8')
@@ -55,53 +64,70 @@ base64_getint.zvalue = (
 def decompress(blob):
     size = struct.unpack('>I', blob[:4])[0]
     orig = zlib.decompress(blob[4:])
-    assert len(orig) == size
+    # not passed on pkgsrc.fossil
+    # assert len(orig) == size
     return orig
 
 
-def delta_checksum(blob):
+if NUMPY_AVAILABLE:
+    def delta_checksum(blob):
+        dt = numpy.dtype(numpy.uint32)
+        dt = dt.newbyteorder('>')
+        m = len(blob) % 4
+        array = numpy.frombuffer(bytes(blob) + (b'\0' * (4-m)), dtype=dt)
+        return int(array.sum(dtype=dt))
+else:
     # can't calculate efficiently using native methods
-    import numpy
-    dt = numpy.dtype(numpy.uint32)
-    dt = dt.newbyteorder('>')
-    m = len(blob) % 4
-    array = numpy.frombuffer(bytes(blob) + (b'\0' * (4-m)), dtype=dt)
-    return int(array.sum(dtype=dt))
+    def delta_checksum(blob):
+        checksum = 0
+        uint32 = 4294967296
+        ints, m = divmod(len(blob), 4)
+        for i in range(ints):
+            checksum = (checksum + struct.unpack('>I', blob[i*4:i*4+4])[0]) % uint32
+        rem = bytes(blob[ints*4:]) + (b'\0' * (4-m))
+        checksum = (checksum + struct.unpack('>I', rem)[0]) % uint32
+        return checksum
 
 
-def delta_apply(blob, delta, check=False):
-    newblob = io.BytesIO()
-    mblob = memoryview(blob)
-    mdelta = memoryview(delta)
-    targetsize, pos = base64_getint(mdelta)
-    pos += 1 # \n
-    while pos < len(delta):
-        num, pos = base64_getint(mdelta, pos)
-        op = mdelta[pos]
-        if op == 64: # @
-            pos += 1
-            offset, pos = base64_getint(mdelta, pos)
-            pos += 1 # ,
-            newblob.write(mblob[offset:offset+num])
-        elif op == 58: # :
-            pos += 1
-            newblob.write(mdelta[pos:pos+num])
-            pos += num
-        elif op == 59: # ;
-            checksum = num
-            break
+try:
+    from fossil_delta import apply_delta as _apply_delta
+    def delta_apply(blob, delta, check=False):
+        return _apply_delta(blob, delta)
+
+except ImportError:
+    def delta_apply(blob, delta, check=False):
+        newblob = io.BytesIO()
+        mblob = memoryview(blob)
+        mdelta = memoryview(delta)
+        targetsize, pos = base64_getint(mdelta)
+        pos += 1 # \n
+        while pos < len(delta):
+            num, pos = base64_getint(mdelta, pos)
+            op = mdelta[pos]
+            if op == 64: # @
+                pos += 1
+                offset, pos = base64_getint(mdelta, pos)
+                pos += 1 # ,
+                newblob.write(mblob[offset:offset+num])
+            elif op == 58: # :
+                pos += 1
+                newblob.write(mdelta[pos:pos+num])
+                pos += num
+            elif op == 59: # ;
+                checksum = num
+                break
+            else:
+                raise ValueError('invalid delta encoding')
         else:
             raise ValueError('invalid delta encoding')
-    else:
-        raise ValueError('invalid delta encoding')
-    buf = newblob.getbuffer()
-    if targetsize != len(buf):
-        raise ValueError('delta decoding failed, size mismatch: %d, %d' %
-                         (targetsize, len(buf)))
-    elif check:
-        if checksum != delta_checksum(buf):
-            raise ValueError('delta decoding failed, data mismatch')
-    return newblob.getvalue()
+        buf = newblob.getbuffer()
+        if targetsize != len(buf):
+            raise ValueError('delta decoding failed, size mismatch: %d, %d' %
+                             (targetsize, len(buf)))
+        elif check:
+            if checksum != delta_checksum(buf):
+                raise ValueError('delta decoding failed, data mismatch')
+        return newblob.getvalue()
 
 
 def remove_clearsign(blob):
@@ -175,6 +201,9 @@ class StructuralArtifact(Artifact):
         'D': 'datetime',
         'E': 'technote',
         'F': 'file',
+        'G': 'thread_root',
+        'H': 'thread_title',
+        'I': 'in_reply_to',
         'J': 'ticket_change',
         'K': 'ticket_id',
         'L': 'wiki_title',
@@ -207,9 +236,9 @@ class StructuralArtifact(Artifact):
             cmd, *toks = line.decode('utf-8').rstrip().split(' ')
             if cmd in 'AFJT':
                 val = tuple(map(text_unescape, toks))
-            elif cmd in 'BKMNRZ':
+            elif cmd in 'BGIKMNRZ':
                 val = toks[0]
-            elif cmd in 'CLU':
+            elif cmd in 'CHLU':
                 val = text_unescape(toks[0])
             elif cmd == 'D':
                 val = parse_dt(toks[0])
@@ -257,6 +286,8 @@ class Repo:
         self.db = sqlite3.connect(repository)
         self.db.row_factory = sqlite3.Row
         self.db.execute('PRAGMA case_sensitive_like=1')
+        if check and not NUMPY_AVAILABLE:
+            warnings.warn('install numpy to calculate checksum faster')
         self.check = check
         self.cache = LRUCache(cachesize)
 
@@ -306,7 +337,10 @@ class Repo:
     def find_artifact(self, prefix):
         row = self.execute('SELECT rid, uuid FROM blob WHERE uuid LIKE ?',
               (prefix+'%',)).fetchone()
-        return tuple(row)
+        if row:
+            return tuple(row)
+        else:
+            raise KeyError("can't find a blob with prefix " + prefix)
 
     def to_uuid(self, rid):
         row = self.execute('SELECT uuid FROM blob WHERE rid = ?',
