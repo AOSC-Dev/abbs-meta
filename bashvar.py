@@ -9,6 +9,8 @@ import subprocess
 import collections
 import pyparsing as pp
 
+pp.ParserElement.enablePackrat()
+
 re_variable = re.compile('^\\s*([a-zA-Z_][a-zA-Z0-9_]*)=')
 
 whitespace = pp.White(ws=' \t').suppress().setName("whitespace")
