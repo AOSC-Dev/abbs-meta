@@ -20,7 +20,7 @@ integer = (pp.Word(pp.nums) | pp.Combine('-' + pp.Word(pp.nums)))
 
 varname = pp.Word(pp.alphas + '_', pp.alphanums + '_').setResultsName("varname")
 # ${parameter/pattern/string}
-substsafe = pp.CharsNotIn('/#%*?[}\'"`\\')
+substsafe = pp.CharsNotIn('/#%[}\'"`\\')
 
 expansion_param = pp.Group(
     pp.Literal('$').setResultsName("expansion") +
@@ -34,7 +34,7 @@ expansion_param = pp.Group(
                 (whitespace + pp.Combine('-' + pp.Word(pp.nums)))
                 ).setResultsName("offset") +
                 pp.Optional(pp.Literal(':') + integer.setResultsName("length")))
-            ^ (pp.oneOf('/ // /# /%').setResultsName("exptype") +
+            ^ (pp.oneOf('/ //').setResultsName("exptype") +
                 pp.Optional(substsafe.setResultsName("pattern") +
                 pp.Optional(pp.Literal('/') +
                 pp.Optional(substsafe, '').setResultsName("string")))
@@ -71,7 +71,7 @@ texttoken = (
 varvalue = pp.Group(pp.ZeroOrMore(texttoken)).setResultsName('varvalue')
 varassign = (
     varname +
-    (pp.Literal('=') | pp.Literal('+=')).setResultsName('operator') +
+    pp.Literal('=').setResultsName('operator') +
     varvalue
 ).setName('varassign').leaveWhitespace()
 
@@ -94,6 +94,21 @@ class BashErrorWarning(UserWarning):
 
 class ParseError(Exception):
     pass
+
+def _compile_pattern(pattern, greedy=True, mode=None):
+    regex = re.escape(pattern)
+    if mode == 'end':
+        regex = regex.replace('\\?', '.').replace('\\*', '.*')
+        if greedy:
+            regex = '^.*?(%s)$' % regex
+        else:
+            regex = '^.*(%s)$' % regex
+    else:
+        regex = regex.replace('\\?', '.').replace(
+            '\\*', '.*' if greedy else '.*?')
+        if mode == 'start':
+            regex = '^' + regex
+    return re.compile(regex)
 
 def combine_value(tokens, variables):
     val = ''
@@ -120,25 +135,24 @@ def combine_value(tokens, variables):
                     else:
                         var = var[offset:]
             elif exptype[0] == '/':
-                pattern = tokens.get('pattern', '')
+                pattern = _compile_pattern(tokens.get('pattern', ''))
                 newstring = tokens.get('string', '')
                 if exptype == '/':
-                    var = var.replace(pattern, newstring, 1)
+                    var = pattern.sub(newstring, var, count=1)
                 elif exptype == '//':
-                    var = var.replace(pattern, newstring)
-                elif exptype == '/#':
-                    if var.startswith(pattern):
-                        var = newstring + var[len(pattern):]
-                elif var.endswith(pattern):  # /%
-                    var = var[:-len(pattern)] + newstring
+                    var = pattern.sub(newstring, var)
             elif exptype[0] == '#':
-                pattern = tokens.get('pattern', '')
-                if var.startswith(pattern):
-                    var = var[len(pattern):]
+                pattern = _compile_pattern(
+                    tokens.get('pattern', ''), (exptype == '##'), 'start')
+                match = pattern.match(var)
+                if match:
+                    var = var[match.end():]
             elif exptype[0] == '%':
-                pattern = tokens.get('pattern', '')
-                if var.endswith(pattern):
-                    var = var[:-len(pattern)]
+                pattern = _compile_pattern(
+                    tokens.get('pattern', ''), (exptype == '%%'), 'end')
+                match = pattern.search(var)
+                if match:
+                    var = var[:match.start(1)]
             val += var
         else:
             warnings.warn('variable "%s" is undefined' % varname, VariableWarning)
@@ -157,15 +171,8 @@ def eval_bashvar_literal(source):
         if not line:
             continue
         val = combine_value(line['varvalue'], variables)
-        if line['operator'] == '=':
-            variables[line['varname']] = val
-        elif line['operator'] == '+=':
-            if line['varname'] in variables:
-                variables[line['varname']] += val
-            else:
-                warnings.warn(
-                    'variable "%s" is undefined' % line['varname'], VariableWarning)
-                variables[line['varname']] = val
+        # only supports line['operator'] == '='
+        variables[line['varname']] = val
     return variables
 
 def uniq(seq):  # Dave Kirby

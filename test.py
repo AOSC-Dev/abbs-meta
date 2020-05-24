@@ -91,6 +91,8 @@ class TestRepoSync(unittest.TestCase):
 
 class TestBashVar(unittest.TestCase):
 
+    maxDiff = None
+
     def test_parse(self):
         empty = collections.OrderedDict()
         self.assertEqual(bashvar.eval_bashvar_literal(''), empty)
@@ -115,9 +117,7 @@ SRCTBL2=http://quassel-irc.org/pub/quassel-${VER}.tar.bz2
 SRCTBL3=http://quassel-irc.org/pub/quassel-$VER.tar.bz2
 SRCTBL4=http://quassel-irc.org/pub/quassel-${VER//./_}.tar.bz2
 
-a=4
-a+=5
-a+=$PKGSEC
+a=45$PKGSEC
 b=""
 c=''
 d=
@@ -166,14 +166,6 @@ s16=4.2.5
 s17="http://download.kde.org/stable/krita/${s16:0:5}/krita-$s16.tar.gz"
 
 str0=01234567890abcdefgh
-s18=${str0/#012/_}
-# _34567890abcdefgh
-s19=${str0/#345/_}
-# 01234567890abcdefgh
-s20=${str0/%fgh/_}
-# 01234567890abcde_
-s21=${str0/%cde/_}
-# 01234567890abcdefgh
 s22=${str0#012}
 # 34567890abcdefgh
 s23=${str0##012}
@@ -186,6 +178,17 @@ s26=${str0%%fgh}
 # 01234567890abcde
 s27=${str0%abc}
 # 01234567890abcdefgh
+str1=abcbc12123
+sub1=${str1#a*c}   # match abc
+sub2=${str1##a*c}  # match ababc
+sub3=${str1%1*3}   # match 123
+sub4=${str1%%1*3}  # match 12123
+sub5=${str1/b?/z}
+# azbc12123
+sub6=${str1//b?/z}
+# azz12123
+sub7=${str1/b*1/z}
+# az23
 '''
         expected = collections.OrderedDict((
             ('PKGDES', 'SDL and OpenGL bindings for Erlang'),
@@ -214,19 +217,24 @@ s27=${str0%abc}
             ('s15', 'ad\neb\nc'), ('s16', '4.2.5'),
             ('s17', 'http://download.kde.org/stable/krita/4.2.5/krita-4.2.5.tar.gz'),
             ('str0', '01234567890abcdefgh'),
-            ('s18', '_34567890abcdefgh'), ('s19', '01234567890abcdefgh'),
-            ('s20', '01234567890abcde_'), ('s21', '01234567890abcdefgh'),
             ('s22', '34567890abcdefgh'), ('s23', '34567890abcdefgh'),
             ('s24', '01234567890abcdefgh'), ('s25', '01234567890abcde'),
             ('s26', '01234567890abcde'), ('s27', '01234567890abcdefgh'),
+            ('str1', 'abcbc12123'),
+            ('sub1', 'bc12123'), ('sub2', '12123'),
+            ('sub3', 'abcbc12'), ('sub4', 'abcbc'),
+            ('sub5', 'azbc12123'), ('sub6', 'azz12123'), ('sub7', 'az23'),
         ))
         result = bashvar.eval_bashvar_literal(source)
+        result2 = bashvar.eval_bashvar_ext(source)
         self.assertEqual(result, expected)
+        self.assertEqual(result2, expected)
 
     def test_fail(self):
         sources = (
             '  true',
             'a=1 b=2',
+            'a+=1',
             ' a = 1 ',
             'a=1; b=2',
             'a=1 && b=2',
@@ -262,6 +270,8 @@ s27=${str0%abc}
             'a=${string/\/e/z}',
             'a=${string/e//z}',
             'a=${string/e/z/}',
+            'a=${string/#e/z}',
+            'a=${string/%e/z}',
             'a=${@/e/z}',
             'a=${*/e/z}',
         )
