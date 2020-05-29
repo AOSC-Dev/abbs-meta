@@ -64,9 +64,13 @@ doublequote = pp.Group(
     pp.Literal('"').suppress()
 ).setName("doublequote")
 
+plain_word = pp.Combine(
+    pp.CharsNotIn('~{}()$\'"`\\*?[] \t\n', exact=1) +
+    pp.Optional(pp.CharsNotIn('{}()$\'"`\\*?[] \t\n'))
+)
+
 texttoken = (
-    singlequote | doublequote | expansion_param |
-    pp.CharsNotIn('~{}()$\'"`\\*?[] \t\n')
+    singlequote | doublequote | expansion_param | plain_word
 )
 varvalue = pp.Group(pp.ZeroOrMore(texttoken)).setResultsName('varvalue')
 varassign = (
