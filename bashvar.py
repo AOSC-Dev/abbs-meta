@@ -15,7 +15,7 @@ re_variable = re.compile('^\\s*([a-zA-Z_][a-zA-Z0-9_]*)=')
 
 whitespace = pp.White(ws=' \t').suppress().setName("whitespace")
 optwhitespace = pp.Optional(whitespace).setName("optwhitespace")
-comment = ('#' + pp.CharsNotIn('\n')).setName("comment")
+comment = ('#' + pp.Optional(pp.CharsNotIn('\n'))).setName("comment")
 integer = (pp.Word(pp.nums) | pp.Combine('-' + pp.Word(pp.nums)))
 
 varname = pp.Word(pp.alphas + '_', pp.alphanums + '_').setResultsName("varname")
