@@ -123,6 +123,9 @@ c=''
 d=
 e='a\\
 b'
+f=a~b
+
+#
 
 string=01234567890abcdefgh
 s1=${string:7}
@@ -208,7 +211,7 @@ sub7=${str1/b*1/z}
             ('SRCTBL3', 'http://quassel-irc.org/pub/quassel-4.89.tar.bz2'),
             ('SRCTBL4', 'http://quassel-irc.org/pub/quassel-4_89.tar.bz2'),
             ('a', '45devel'), ('b', ''), ('c', ''), ('d', ''), ('e', 'a\\\nb'),
-            ('string', 'a\nb\nc'),
+            ('f', 'a~b'), ('string', 'a\nb\nc'),
             ('s1', '7890abcdefgh'), ('s2', ''), ('s3', '78'),
             ('s4', '7890abcdef'), ('s5', 'bcdefgh'), ('s6', ''),
             ('s7', 'bc'), ('s8', 'bcdef'), ('s9', 'abcd/efg/eijk'),
