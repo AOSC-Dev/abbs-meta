@@ -834,7 +834,7 @@ class SourceRepo(LocalRepo):
             'INNER JOIN package_versions pv ON pv.package=p.name '
             'WHERE p.tree=? '
             'ORDER BY pv.commit_time DESC LIMIT 1', (self.name,)).fetchone()
-        last_update = last_update[0] if last_update else 0
+        last_update = last_update[0] if last_update and last_update[0] else 0
         last_rid = mcur.execute(
             'SELECT rid FROM package_rel ORDER BY rid DESC LIMIT 1').fetchone()
         last_rid = last_rid[0] if last_rid else 0
